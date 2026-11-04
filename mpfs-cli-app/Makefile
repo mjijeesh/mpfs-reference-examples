@@ -72,57 +72,20 @@ ifeq ($(wildcard $(BOARD_DIR)),)
     $(error Board directory '$(BOARD_DIR)' not found! Available boards: $(AVAILABLE_BOARDS))
 endif
 
-# Include optional board-specific Makefile fragment
--include $(BOARD_DIR)/board.mk
+# Generic fallbacks
+DIE         ?= MPFS250T
+PACKAGE     ?= FCVG484
+STDIO_UART  ?= 1
+SERIAL_PORT ?= /dev/ttyUSB0
+JOB_FILE    ?= $(BOARD_DIR)/fpga_design/$(BOARD).job
 
-# Device & Hardware Defaults
-ifeq ($(BOARD),mpfs-icicle-kit)
-    DIE_DEFAULT     := MPFS250T
-    PACKAGE_DEFAULT := FCVG484
-    CFLAGS          += -DUSE_CORE_SPI -DCORESPI_BASE_ADDR=0x40000000UL
-else ifeq ($(BOARD),mpfs-video-kit)
-    DIE_DEFAULT     := MPFS250T
-    PACKAGE_DEFAULT := FCG1152
-    CFLAGS          += -DUSE_MSS_SPI1
-else
-    # mpfs-discovery-kit and generic boards
-    DIE_DEFAULT     := MPFS095T
-    PACKAGE_DEFAULT := FCSG325
-    CFLAGS          += -DUSE_MSS_SPI0
-endif
-
-DIE      ?= $(DIE_DEFAULT)
-PACKAGE  ?= $(PACKAGE_DEFAULT)
-JOB_FILE ?= $(BOARD_DIR)/fpga_design/$(BOARD).job
+# Include target-specific definitions from board directory
+include $(BOARD_DIR)/board.mk
 
 CFLAGS += -DBOARD_NAME="\"$(BOARD)\"" \
           -DMPFS_TARGET_DIE="\"$(DIE)\"" \
           -DMPFS_TARGET_PACKAGE="\"$(PACKAGE)\""
 
-# ------------------------------------------------------------------------------
-# 4. MSS UART Port & STDIO Binding
-# ------------------------------------------------------------------------------
-# Board-specific default UART port:
-#   - Discovery Kit uses MMUART4 (2nd USB-UART interface)
-#   - Icicle Kit uses MMUART1 (2nd USB-UART interface)
-ifneq ($(filter $(BOARD),mpfs-discovery-kit mpfs-disco-kit),)
-    MSS_UART ?= 4
-    CFLAGS   += -DMPFS_DISCOVERY_KIT
-else
-    MSS_UART ?= 1
-endif
-
-# Allows manual command-line override (e.g., make MSS_UART=0)
-_UART_NUM := $(patsubst MSS_UART%,%,$(MSS_UART))
-ifeq ($(filter $(_UART_NUM),0 1 2 3 4),)
-    _UART_NUM := 1
-endif
-
-STDIO_UART_SYMBOL := g_mss_uart$(_UART_NUM)_lo
-STDIO_UART_PERIPH := MSS_PERIPH_MMUART$(_UART_NUM)
-
-CFLAGS += -DMICROCHIP_STDIO_THRU_MMUARTX=\&$(STDIO_UART_SYMBOL) \
-          -DMICROCHIP_STDIO_PERIPH=$(STDIO_UART_PERIPH)
 
 # ------------------------------------------------------------------------------
 # 5. External Tools & Flash Programmer Configuration
@@ -281,7 +244,7 @@ print_build_info:
 	@echo "  * DIE / PACKAGE     : $(DIE) / $(PACKAGE)"
 	@echo "  * MEMORY TARGET     : $(MEM_TARGET) (Linker: $(LINKER_SCRIPT))"
 	@echo "  * CROSS COMPILER    : $(CC)"
-	@echo "  * STDIO UART        : MSS_UART$(_UART_NUM) (&$(STDIO_UART_SYMBOL))"
+	@echo "  * STDIO UART        : MSS_UART$(STDIO_UART)"
 	@echo "========================================================================"
 
 generate_headers:
