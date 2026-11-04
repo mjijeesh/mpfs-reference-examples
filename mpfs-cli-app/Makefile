@@ -251,7 +251,7 @@ OBJS := $(patsubst %.c, $(BUILD_DIR)/%.o, $(SRCS_C)) \
 # ------------------------------------------------------------------------------
 .PHONY: all clean print_build_info generate_headers show_size \
         lim lim-app envm envm-lim ddr \
-        ddr-boot lim-boot flash-payload serialboot \
+        ddr-boot lim-boot ddr-flash lim-flash flash-payload serialboot \
         program-envm program-envm-lim flash-envm program-job \
         openocd debug gdbinit help
 
@@ -380,6 +380,12 @@ ddr-boot:
 lim-boot:
 	@$(MAKE) BOARD=$(BOARD) MEM_TARGET=lim serialboot
 
+ddr-flash:
+	@$(MAKE) BOARD=$(BOARD) MEM_TARGET=ddr flash-payload
+
+lim-flash:
+	@$(MAKE) BOARD=$(BOARD) MEM_TARGET=lim flash-payload
+
 serialboot: $(BUILD_DIR)/$(TARGET).bin
 	@echo "=================================================="
 	@echo " Streaming & Executing Raw Binary to RAM"
@@ -458,7 +464,9 @@ help:
 	@echo " Fast Serial Boot Targets:"
 	@echo "   make ddr-boot     - Cleanly compile DDR and stream raw binary via UART"
 	@echo "   make lim-boot     - Cleanly compile LIM and stream raw binary via UART"
-	@echo "   make flash-payload- Flash HSS Payload to SPI Flash via mpfs-terminal"
+	@echo "   make ddr-flash    - Compile DDR, generate payload, and flash to SPI"
+	@echo "   make lim-flash    - Compile LIM, generate payload, and flash to SPI"
+	@echo "   make flash-payload- Flash existing HSS Payload to SPI Flash"
 	@echo ""
 	@echo " Flashing & Hardware Targets:"
 	@echo "   make program-job  - Flash FPGA fabric (.job file) using FlashPro Express"
