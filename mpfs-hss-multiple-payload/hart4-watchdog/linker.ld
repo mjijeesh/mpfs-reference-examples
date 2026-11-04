@@ -3,13 +3,13 @@ ENTRY(_start)
 
 MEMORY
 {
-    ddr_hart4 (rwx) : ORIGIN = 0x83000000, LENGTH = 15M
+    ddr_hart4 (rwx) : ORIGIN = 0x80030000, LENGTH = 64K
 }
 
 SECTIONS
 {
     .text : {
-        *(.text.entry)
+        KEEP(*(.text.entry))
         *(.text .text.*)
     } > ddr_hart4
 

@@ -13,7 +13,7 @@ static inline uint64_t read_cycles(void)
 int main(void)
 {
     volatile hart_telemetry_t *t = &TELEMETRY->hart[4];
-    strncpy((char *)t->task_name, "Watchdog & System Timer", sizeof(t->task_name));
+   telemetry_set_name(t->task_name, "Watchdog & System Timer", sizeof(t->task_name));
     t->state = HART_STATE_STARTING;
     t->heartbeat = 0;
     t->iterations = 0;

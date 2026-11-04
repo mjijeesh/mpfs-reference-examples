@@ -3,25 +3,25 @@ ENTRY(_start)
 
 MEMORY
 {
-    ddr_hart2 (rwx) : ORIGIN = 0x81000000, LENGTH = 16M
+    ddr_hart (rwx) :ORIGIN = 0x80010000, LENGTH = 64K
 }
 
 SECTIONS
 {
     .text : {
-        *(.text.entry)
+        KEEP(*(.text.entry))
         *(.text .text.*)
-    } > ddr_hart2
+    } > ddr_hart
 
     .rodata : {
         *(.rodata .rodata.*)
-    } > ddr_hart2
+    } > ddr_hart
 
     .data : {
         __global_pointer$ = . + 0x800;
         *(.data .data.*)
         *(.sdata .sdata.*)
-    } > ddr_hart2
+    } > ddr_hart
 
     .bss : {
         . = ALIGN(8);
@@ -31,7 +31,7 @@ SECTIONS
         *(COMMON)
         . = ALIGN(8);
         __bss_end = .;
-    } > ddr_hart2
+    } > ddr_hart
 
     . = ALIGN(16);
     __stack_bottom = .;

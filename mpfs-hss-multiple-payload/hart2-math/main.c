@@ -1,4 +1,3 @@
-#include <string.h>
 #include "../common/shared_telemetry.h"
 
 static uint32_t compute_crc32(const uint8_t *data, size_t len)
@@ -16,7 +15,7 @@ static uint32_t compute_crc32(const uint8_t *data, size_t len)
 int main(void)
 {
     volatile hart_telemetry_t *t = &TELEMETRY->hart[2];
-    strncpy((char *)t->task_name, "Compute (CRC32 Engine)", sizeof(t->task_name));
+    telemetry_set_name(t->task_name, "Compute (CRC32 Engine)", sizeof(t->task_name));
     t->state = HART_STATE_STARTING;
     t->heartbeat = 0;
     t->iterations = 0;

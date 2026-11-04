@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 #define SHARED_TELEMETRY_BASE 0x83F00000UL
 
@@ -31,6 +32,17 @@ typedef struct {
 
 static inline void memory_barrier(void) {
     __asm__ volatile ("fence rw, rw" ::: "memory");
+}
+
+/* Freestanding string copy - no libc / strncpy dependency */
+static inline void telemetry_set_name(volatile char *dst, const char *src, size_t maxlen)
+{
+    size_t i = 0;
+    while (src[i] != '\0' && i < (maxlen - 1)) {
+        dst[i] = src[i];
+        i++;
+    }
+    dst[i] = '\0';
 }
 
 #endif // SHARED_TELEMETRY_H

@@ -28,3 +28,25 @@ void u54_1(void)
     cli_init();
     cli_run();
 }
+
+
+/* needed for packed fbi format for flashboot with multiple bin file*/
+typedef void (*worker_entry_t)(void);
+
+void u54_2(void)
+{
+    worker_entry_t entry = (worker_entry_t)0x80010000UL;
+    entry();
+}
+
+void u54_3(void)
+{
+    worker_entry_t entry = (worker_entry_t)0x80020000UL;
+    entry();
+}
+
+void u54_4(void)
+{
+    worker_entry_t entry = (worker_entry_t)0x80030000UL;
+    entry();
+}

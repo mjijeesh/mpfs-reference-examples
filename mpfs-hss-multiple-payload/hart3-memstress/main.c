@@ -7,7 +7,7 @@ static volatile uint32_t s_test_buffer[TEST_BUF_WORDS] __attribute__((aligned(64
 int main(void)
 {
     volatile hart_telemetry_t *t = &TELEMETRY->hart[3];
-    strncpy((char *)t->task_name, "Memory Stress (DDR Bus)", sizeof(t->task_name));
+    telemetry_set_name(t->task_name, "Memory Stress (DDR Bus)", sizeof(t->task_name));
     t->state = HART_STATE_STARTING;
     t->heartbeat = 0;
     t->iterations = 0;

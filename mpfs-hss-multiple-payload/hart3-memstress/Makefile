@@ -1,17 +1,28 @@
 CROSS_COMPILE ?= riscv-none-elf-
 CC      := $(CROSS_COMPILE)gcc
+LD      := $(CROSS_COMPILE)gcc
 OBJCOPY := $(CROSS_COMPILE)objcopy
 
-CFLAGS  := -march=rv64gc -mabi=lp64d -mcmodel=medany -O2 -nostdlib -ffreestanding -Wall -I../common
-LDFLAGS := -T linker.ld -nostdlib
+ARCH_FLAGS := -march=rv64gc -mabi=lp64d -mcmodel=medany
+CFLAGS     := $(ARCH_FLAGS) -O2 -nostdlib -ffreestanding -Wall -I../common
+LDFLAGS    := $(ARCH_FLAGS) -T linker.ld -nostdlib -Wl,--no-warn-rwx-segments
 
-SRCS    := crt0.S main.c
+OBJS    := crt0.o main.o
 TARGET  := hart3-memstress.elf
 
 all: $(TARGET)
 
-$(TARGET): $(SRCS)
-	$(CC) $(CFLAGS) $(SRCS) $(LDFLAGS) -o $@
+crt0.o: crt0.S
+	@echo " [AS]  $<"
+	$(CC) $(CFLAGS) -c $< -o $@
+
+main.o: main.c
+	@echo " [CC]  $<"
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(TARGET): $(OBJS)
+	@echo " [LD]  $@"
+	$(LD) $(OBJS) $(LDFLAGS) -o $@
 
 clean:
-	rm -f $(TARGET)
+	rm -f $(OBJS) $(TARGET)
