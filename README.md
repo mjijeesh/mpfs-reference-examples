@@ -15,8 +15,7 @@ To enable rapid bare-metal iteration and multi-board support, the upstream Hart 
    * `serialboot`: Enters binary SFL receiver mode.
    * `FLASH_ID`: Displays detected SPI flash manufacturer, device IDs, and 4-byte addressing status.
    * `flashboot <offset>`: Fallback bootloader that reads legacy LiteX-style `.fbi` headers from SPI flash and launches them.
-   * `payloadboot <addr>`: In-memory unpacker that detects and boots an HSS payload staged in DDR.
-
+   
 ---
 
 ## Hardware & Interface Architecture
