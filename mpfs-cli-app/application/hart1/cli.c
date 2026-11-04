@@ -136,7 +136,12 @@ void cli_run(void)
 
     while (1) {
         // 1. Print prompt and IMMEDIATELY flush to UART
-        printf("mpfs-icicle-kit> ");
+        #ifndef BOARD_NAME
+        #define BOARD_NAME "polarfire-soc"
+        #endif
+
+        printf("%s> ", BOARD_NAME);
+
         fflush(stdout);
 
         // 2. Read user input

@@ -102,8 +102,17 @@ CFLAGS += -DBOARD_NAME="\"$(BOARD)\"" \
 # ------------------------------------------------------------------------------
 # 4. MSS UART Port & STDIO Binding
 # ------------------------------------------------------------------------------
-# Allows override via: make MSS_UART=0 or make MSS_UART=MSS_UART1 (Default: UART 1)
-MSS_UART ?= 1
+# Board-specific default UART port:
+#   - Discovery Kit uses MMUART4 (2nd USB-UART interface)
+#   - Icicle Kit uses MMUART1 (2nd USB-UART interface)
+ifneq ($(filter $(BOARD),mpfs-discovery-kit mpfs-disco-kit),)
+    MSS_UART ?= 4
+    CFLAGS   += -DMPFS_DISCOVERY_KIT
+else
+    MSS_UART ?= 1
+endif
+
+# Allows manual command-line override (e.g., make MSS_UART=0)
 _UART_NUM := $(patsubst MSS_UART%,%,$(MSS_UART))
 ifeq ($(filter $(_UART_NUM),0 1 2 3 4),)
     _UART_NUM := 1
