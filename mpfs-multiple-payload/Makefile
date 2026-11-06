@@ -86,7 +86,6 @@ CFLAGS += -DBOARD_NAME="\"$(BOARD)\"" \
           -DMPFS_TARGET_DIE="\"$(DIE)\"" \
           -DMPFS_TARGET_PACKAGE="\"$(PACKAGE)\""
 
-
 # ------------------------------------------------------------------------------
 # 5. External Tools & Flash Programmer Configuration
 # ------------------------------------------------------------------------------
@@ -97,11 +96,16 @@ SOC_GEN_SCRIPT      := platform/soc_config_generator/mpfs_configuration_generato
 XML_CONFIG_DIR      ?= $(BOARD_DIR)/fpga_design/design_description
 CONFIG_OUT_DIR      ?= $(BOARD_DIR)
 
-HSS_PAYLOAD_GEN_DIR ?= tools/hss-payload-generator
-ifeq ($(wildcard $(HSS_PAYLOAD_GEN_DIR)/Makefile),)
-    HSS_PAYLOAD_GEN_DIR := tools
+ifeq ($(HOST_OS),Windows)
+    HSS_PAYLOAD_GEN_DIR := tools/hss-payload-generator/binaries
+    HSS_PAYLOAD_GEN     := $(HSS_PAYLOAD_GEN_DIR)/hss-payload-generator.exe
+else
+    HSS_PAYLOAD_GEN_DIR ?= tools/hss-payload-generator
+    ifeq ($(wildcard $(HSS_PAYLOAD_GEN_DIR)/Makefile),)
+        HSS_PAYLOAD_GEN_DIR := tools
+    endif
+    HSS_PAYLOAD_GEN     := $(HSS_PAYLOAD_GEN_DIR)/hss-payload-generator$(BIN_EXT)
 endif
-HSS_PAYLOAD_GEN     := $(HSS_PAYLOAD_GEN_DIR)/hss-payload-generator$(BIN_EXT)
 
 # Export variables for sub-tools
 export SC_INSTALL_DIR FPGENPROG FPEXPRESS BOOTMODE_PROGRAMMER
@@ -283,8 +287,16 @@ $(BUILD_DIR)/$(TARGET).fbi: $(BUILD_DIR)/$(TARGET).bin
 # 10. HSS Payload Generation Rules
 # ------------------------------------------------------------------------------
 $(HSS_PAYLOAD_GEN):
+ifeq ($(HOST_OS),Windows)
+	@if [ ! -f "$@" ]; then \
+		echo "[ERROR] Windows binary '$@' not found!"; \
+		echo "Ensure hss-payload-generator.exe and its DLLs are in $(HSS_PAYLOAD_GEN_DIR)"; \
+		exit 1; \
+	fi
+else
 	@echo " [HOST] Building hss-payload-generator in $(HSS_PAYLOAD_GEN_DIR)..."
 	@$(MAKE) -C $(HSS_PAYLOAD_GEN_DIR)
+endif
 
 $(BUILD_DIR)/payload.yaml: $(BUILD_DIR)/$(TARGET).elf
 	@mkdir -p $(dir $@)
@@ -312,7 +324,7 @@ $(BUILD_DIR)/payload.yaml: $(BUILD_DIR)/$(TARGET).elf
 $(BUILD_DIR)/$(TARGET)_payload.bin: $(BUILD_DIR)/$(TARGET).elf $(BUILD_DIR)/payload.yaml $(HSS_PAYLOAD_GEN)
 	@echo " [HSS] Generating formatted boot payload: $@"
 	@$(HSS_PAYLOAD_GEN) -c $(BUILD_DIR)/payload.yaml $@
-	@cp $@ $(BUILD_DIR)/payload.bin
+	@$(PYTHON) -c "import shutil; shutil.copyfile('$@', '$(BUILD_DIR)/payload.bin')"
 
 show_size: $(BUILD_DIR)/$(TARGET).elf
 	@echo ""
@@ -341,7 +353,6 @@ ddr:
 # ------------------------------------------------------------------------------
 # 12. Automated Sub-Make Boot Targets
 # ------------------------------------------------------------------------------
-# Guarantees that compilation and streaming pick up the exact target directory
 SERIAL_PORT     ?= /dev/ttyUSB0
 FLASH_BOOT_ADDR ?= 0x00020000
 DDR_ADDR        ?= 0x80000000
