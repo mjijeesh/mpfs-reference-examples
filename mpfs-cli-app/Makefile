@@ -97,11 +97,16 @@ SOC_GEN_SCRIPT      := platform/soc_config_generator/mpfs_configuration_generato
 XML_CONFIG_DIR      ?= $(BOARD_DIR)/fpga_design/design_description
 CONFIG_OUT_DIR      ?= $(BOARD_DIR)
 
-HSS_PAYLOAD_GEN_DIR ?= tools/hss-payload-generator
-ifeq ($(wildcard $(HSS_PAYLOAD_GEN_DIR)/Makefile),)
-    HSS_PAYLOAD_GEN_DIR := tools
+ifeq ($(HOST_OS),Windows)
+    HSS_PAYLOAD_GEN_DIR := tools/hss-payload-generator/binaries
+    HSS_PAYLOAD_GEN     := $(HSS_PAYLOAD_GEN_DIR)/hss-payload-generator.exe
+else
+    HSS_PAYLOAD_GEN_DIR ?= tools/hss-payload-generator
+    ifeq ($(wildcard $(HSS_PAYLOAD_GEN_DIR)/Makefile),)
+        HSS_PAYLOAD_GEN_DIR := tools
+    endif
+    HSS_PAYLOAD_GEN     := $(HSS_PAYLOAD_GEN_DIR)/hss-payload-generator$(BIN_EXT)
 endif
-HSS_PAYLOAD_GEN     := $(HSS_PAYLOAD_GEN_DIR)/hss-payload-generator$(BIN_EXT)
 
 # Export variables for sub-tools
 export SC_INSTALL_DIR FPGENPROG FPEXPRESS BOOTMODE_PROGRAMMER
