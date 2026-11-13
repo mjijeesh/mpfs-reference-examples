@@ -10,10 +10,11 @@
 
 
 #if defined(MEM_TARGET_LIM)
-#define TFTP_RAMDISK_BYTES  (32U * 1024U)       /* 32 KiB in L2-LIM SRAM */
+#define TFTP_RAMDISK_BYTES  (16U * 1024U)       /* 16 KiB in L2-LIM SRAM */
 #else
 #define TFTP_RAMDISK_BYTES  (1024U * 1024U)     /* 1 MiB in DDR */
 #endif
+
 
 
 static uint8_t s_ramdisk[TFTP_RAMDISK_BYTES] __attribute__((aligned(64)));

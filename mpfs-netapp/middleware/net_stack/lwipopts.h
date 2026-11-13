@@ -8,13 +8,13 @@
 /* Heap & pool sizing scaled to L2-LIM SRAM vs DDR */
 #define MEM_ALIGNMENT                   8
 #if defined(MEM_TARGET_LIM)
-#define MEM_SIZE                        (24 * 1024)
+#define MEM_SIZE                        (20 * 1024)
 #define MEMP_NUM_PBUF                   16
 #define MEMP_NUM_UDP_PCB                6
 #define MEMP_NUM_TCP_PCB                8
 #define MEMP_NUM_TCP_SEG                16
 #define MEMP_NUM_SYS_TIMEOUT            12
-#define PBUF_POOL_SIZE                  12
+#define PBUF_POOL_SIZE                  8
 #else
 #define MEM_SIZE                        (128 * 1024)
 #define MEMP_NUM_PBUF                   32

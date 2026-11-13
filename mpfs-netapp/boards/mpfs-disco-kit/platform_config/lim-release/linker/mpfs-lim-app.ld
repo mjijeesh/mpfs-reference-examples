@@ -23,7 +23,7 @@ MEMORY
     u54_3_itim (rwx)           : ORIGIN = 0x01818000, LENGTH = 28k
     u54_4_itim (rwx)           : ORIGIN = 0x01820000, LENGTH = 28k
     
-    /* High LIM target: 256KB offset within 512KB LIM region */
+    /* High LIM target: 256KB offset within 512KB LIM region (HSS uses 0x08000000-0x0803FFFF) */
     l2lim (rwx)                : ORIGIN = 0x08040000, LENGTH = 256k
     
     ddr_cached_32bit (rwx)     : ORIGIN = 0x80000000, LENGTH = 128M
@@ -31,14 +31,14 @@ MEMORY
     ddr_wcb_32bit (rwx)        : ORIGIN = 0xD0000000, LENGTH = 256M
 }
 
-HEAP_SIZE               = 8k;
-SIZE_OF_COMMON_HART_MEM = 4k;
+HEAP_SIZE               = 4k;
+SIZE_OF_COMMON_HART_MEM = 2k;
 
-STACK_SIZE_E51_APPLICATION   = 8k;
+STACK_SIZE_E51_APPLICATION   = 1k;
 STACK_SIZE_U54_1_APPLICATION = 8k;
-STACK_SIZE_U54_2_APPLICATION = 8k;
-STACK_SIZE_U54_3_APPLICATION = 8k;
-STACK_SIZE_U54_4_APPLICATION = 8k;
+STACK_SIZE_U54_2_APPLICATION = 1k;
+STACK_SIZE_U54_3_APPLICATION = 1k;
+STACK_SIZE_U54_4_APPLICATION = 1k;
 
 SECTIONS
 {

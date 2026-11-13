@@ -16,9 +16,21 @@
 #define PACKET_MAX              1518U
 #define TX_SLOT_SIZE            1536U
 #define ETH_MIN_LEN             60U
+
+#define RX_SLOT_SIZE            1536U
+
+
+
+#define DHCP_FALLBACK_MS        8000U
+
+#if defined(MEM_TARGET_LIM)
+#define TX_RING_SLOTS           4U
+#define RX_QUEUE_SIZE           8U
+#else
 #define TX_RING_SLOTS           8U
 #define RX_QUEUE_SIZE           64U
-#define DHCP_FALLBACK_MS        8000U
+#endif
+
 
 typedef struct {
     uint8_t  data[PACKET_MAX];
@@ -29,8 +41,11 @@ static raw_frame_t g_rx_raw_queue[RX_QUEUE_SIZE];
 static volatile uint32_t g_rx_q_head = 0U;
 static volatile uint32_t g_rx_q_tail = 0U;
 
-static uint8_t g_mac_rx_buffer[MSS_MAC_RX_RING_SIZE][MSS_MAC_MAX_RX_BUF_SIZE] __attribute__((aligned(16)));
+static uint8_t g_mac_rx_buffer[MSS_MAC_RX_RING_SIZE][RX_SLOT_SIZE] __attribute__((aligned(16)));
 static uint8_t g_mac_tx_buffer[TX_RING_SLOTS][TX_SLOT_SIZE] __attribute__((aligned(16)));
+
+//static uint8_t g_mac_rx_buffer[MSS_MAC_RX_RING_SIZE][MSS_MAC_MAX_RX_BUF_SIZE] __attribute__((aligned(16)));
+//static uint8_t g_mac_tx_buffer[TX_RING_SLOTS][TX_SLOT_SIZE] __attribute__((aligned(16)));
 static volatile uint32_t g_tx_ring_head = 0U;
 
 static struct netif g_netif;

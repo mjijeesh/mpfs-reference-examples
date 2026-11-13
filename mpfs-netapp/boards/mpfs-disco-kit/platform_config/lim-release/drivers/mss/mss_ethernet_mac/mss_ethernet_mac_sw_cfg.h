@@ -11,6 +11,19 @@
 #define TARGET_G5_SOC                   1
 #endif
 
+#if defined(MEM_TARGET_LIM)
+#define MSS_MAC_RX_RING_SIZE (16U)
+#define MSS_MAC_TX_RING_SIZE (16U)
+#else
+#define MSS_MAC_RX_RING_SIZE (32U)
+#if defined(MSS_MAC_SPEED_TEST)
+#define MSS_MAC_TX_RING_SIZE (4001U)
+#else
+#define MSS_MAC_TX_RING_SIZE (1001U)
+#endif
+#endif
+
+
 #define MSS_MAC_64_BIT_ADDRESS_MODE     1
 #define MSS_MAC_SIMPLE_TX_QUEUE         1
 #define MSS_MAC_TIME_STAMPED_MODE       0
@@ -23,8 +36,6 @@
 
 /* Must be 4 on PolarFire SoC to prevent out-of-bounds pointer faults in MSS_MAC_init */
 #define MSS_MAC_QUEUE_COUNT             (4)
-#define MSS_MAC_RX_RING_SIZE            (4U)
-#define MSS_MAC_TX_RING_SIZE            (4U)
 
 /* Supported PHY interface types */
 #define NULL_PHY                        (0x0001U)
