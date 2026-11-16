@@ -11,11 +11,9 @@ ifeq ($(origin MEM_TARGET), undefined)
         MEM_TARGET := lim-debug
     else ifneq ($(filter ddr-debug debug-ddr,$(MAKECMDGOALS)),)
         MEM_TARGET := ddr-debug
-    else ifneq ($(filter ddr-release ddr-boot ddr-flash,$(MAKECMDGOALS)),)
+    else ifneq ($(filter ddr-release,$(MAKECMDGOALS)),)
         MEM_TARGET := ddr-release
-    else ifneq ($(filter envm envm-release program-envm,$(MAKECMDGOALS)),)
-        MEM_TARGET := envm-release
-    else ifneq ($(filter envm-lim program-envm-lim,$(MAKECMDGOALS)),)
+    else ifneq ($(filter envm envm-lim program-envm-lim,$(MAKECMDGOALS)),)
         MEM_TARGET := envm-lim
     else
         MEM_TARGET := lim-release
@@ -34,7 +32,6 @@ include toolchain.mk
 DIE             ?= MPFS095T
 PACKAGE         ?= FCSG325
 STDIO_UART      ?= 4
-SERIAL_PORT     ?= /dev/ttyUSB0
 FLASH_BOOT_ADDR ?= 0x00020000
 DDR_ADDR        ?= 0x80000000
 JOB_FILE        ?= $(BOARD_DIR)/fpga_design/$(BOARD).job
@@ -74,12 +71,6 @@ else ifeq ($(MEM_TARGET),ddr-release)
     TARGET_DEFS   := -DMEM_TARGET_DDR -DIMAGE_LOADED_BY_BOOTLOADER=1
     OPT_LEVEL     ?= -O2
     NEEDS_HSS_PAYLOAD := 1
-else ifeq ($(MEM_TARGET),envm-release)
-    BUILD_DIR     := build/$(BOARD)/envm-release
-    CONFIG_DIR    := envm-release
-    LINKER_SCRIPT := $(BOARD_DIR)/platform_config/$(CONFIG_DIR)/linker/mpfs-envm.ld
-    TARGET_DEFS   := -DMEM_TARGET_LIM
-    OPT_LEVEL     ?= -O2
 else ifeq ($(MEM_TARGET),envm-lim)
     BUILD_DIR     := build/$(BOARD)/envm-lim
     CONFIG_DIR    := envm-scratchpad-release
@@ -87,10 +78,9 @@ else ifeq ($(MEM_TARGET),envm-lim)
     TARGET_DEFS   := -DMEM_TARGET_LIM
     OPT_LEVEL     ?= -O2
 else
-    $(error Unknown MEM_TARGET='$(MEM_TARGET)'. Valid: lim-debug, lim-release, ddr-debug, ddr-release, envm-release, envm-lim)
+    $(error Unknown MEM_TARGET='$(MEM_TARGET)'. Valid: lim-debug, lim-release, ddr-debug, ddr-release, envm-lim)
 endif
 
-# 3. Compiler & Linker Flags
 # 3. Compiler & Linker Flags
 include middleware/middleware.mk
 
@@ -103,7 +93,6 @@ INCLUDE_DIRS := application application/inc \
                 $(BOARD_DIR) $(BOARD_DIR)/fpga_design_config \
                 $(BOARD_DIR)/platform_config/$(CONFIG_DIR) \
                 $(BOARD_DIR)/platform_config/$(CONFIG_DIR)/mpfs_hal_config
-
 
 CFLAGS += $(ARCH_FLAGS) $(OPT_LEVEL) -g3 -fmessage-length=0 -fsigned-char \
           -ffunction-sections -fdata-sections -std=gnu11 -Wall -Wextra \
@@ -146,7 +135,6 @@ OBJS := $(patsubst %.c, $(BUILD_DIR)/%.o, $(SRCS_C)) \
         $(patsubst %.S, $(BUILD_DIR)/%.o, $(SRCS_ASM))
 
 
-
 ELF_FILE     := $(BUILD_DIR)/$(TARGET).elf
 BIN_FILE     := $(BUILD_DIR)/$(TARGET).bin
 HEX_FILE     := $(BUILD_DIR)/$(TARGET).hex
@@ -158,9 +146,8 @@ ALL_ARTIFACTS  := $(BASE_ARTIFACTS) $(if $(filter 1,$(NEEDS_HSS_PAYLOAD)),$(PAYL
 
 # 5. Core Build Rules
 .PHONY: all clean banner generate_headers show_size memusage help \
-        lim-debug lim-release ddr-debug ddr-release envm-release envm-lim \
-        lim-boot ddr-boot lim-flash ddr-flash \
-        program-envm program-envm-lim program-job openocd debug debug-lim debug-ddr
+        lim-debug lim-release ddr-debug ddr-release envm-lim \
+        program-envm-lim program-job openocd debug debug-lim debug-ddr
 
 all: banner generate_headers $(ALL_ARTIFACTS) show_size
 
@@ -230,28 +217,8 @@ $(PAYLOAD_FILE): $(ELF_FILE) $(BUILD_DIR)/payload.yaml $(HSS_PAYLOAD_GEN)
 	@cp -f $@ $(BUILD_DIR)/payload.bin
 
 # 7. Build, Boot, Flash & JTAG Debug Workflows
-lim-debug lim-release ddr-debug ddr-release envm-release envm-lim:
+lim-debug lim-release ddr-debug ddr-release envm-lim:
 	@$(MAKE) BOARD=$(BOARD) MEM_TARGET=$@ all
-
-lim-boot:
-	@$(MAKE) BOARD=$(BOARD) MEM_TARGET=lim-release all
-	$(MPFS_TERMINAL) $(SERIAL_PORT) --kernel build/$(BOARD)/lim-release/$(TARGET)_payload.bin --kernel-adr $(DDR_ADDR)
-
-ddr-boot:
-	@$(MAKE) BOARD=$(BOARD) MEM_TARGET=ddr-release all
-	$(MPFS_TERMINAL) $(SERIAL_PORT) --kernel build/$(BOARD)/ddr-release/$(TARGET)_payload.bin --kernel-adr $(DDR_ADDR)
-
-lim-flash:
-	@$(MAKE) BOARD=$(BOARD) MEM_TARGET=lim-release all
-	$(MPFS_TERMINAL) $(SERIAL_PORT) --kernel build/$(BOARD)/lim-release/$(TARGET)_payload.bin --flash --kernel-adr $(FLASH_BOOT_ADDR)
-
-ddr-flash:
-	@$(MAKE) BOARD=$(BOARD) MEM_TARGET=ddr-release all
-	$(MPFS_TERMINAL) $(SERIAL_PORT) --kernel build/$(BOARD)/ddr-release/$(TARGET)_payload.bin --flash --kernel-adr $(FLASH_BOOT_ADDR)
-
-program-envm:
-	@$(MAKE) BOARD=$(BOARD) MEM_TARGET=envm-release all
-	"$(JAVA)" -jar $(BOOTMODE_PROGRAMMER) --bootmode 1 --die $(DIE) --package $(PACKAGE) --workdir $(CURDIR)/build/$(BOARD)/envm-release
 
 program-envm-lim:
 	@$(MAKE) BOARD=$(BOARD) MEM_TARGET=envm-lim all
@@ -272,7 +239,6 @@ debug debug-lim:
 debug-ddr:
 	@$(MAKE) BOARD=$(BOARD) MEM_TARGET=ddr-debug gdb-ddr
 
-
 gdb-lim: $(ELF_FILE)
 	$(GDB) $(ELF_FILE) \
 		-ex 'set $$target_riscv=1' \
@@ -282,6 +248,7 @@ gdb-lim: $(ELF_FILE)
 		-ex 'load' \
 		-ex 'thread apply all set $$pc = _start' \
 		-ex 'continue'
+
 gdb-ddr: $(ELF_FILE)
 	$(GDB) $(ELF_FILE) \
 		-ex 'set $$target_riscv=1' \
@@ -296,8 +263,29 @@ clean:
 	@rm -rf build .gdbinit
 
 help:
-	@echo "Build targets : make [lim-debug | lim-release | ddr-debug | ddr-release | envm-release | envm-lim]"
-	@echo "HSS YMODEM    : make [lim-boot | ddr-boot]"
-	@echo "HSS SPI Flash : make [lim-flash | ddr-flash]"
-	@echo "JTAG Debug    : make openocd (Terminal 1) -> make debug-lim | debug-ddr (Terminal 2)"
-	@echo "Memory Audit  : make MEM_TARGET=<target> memusage | make clean"
+	@echo "========================================================================"
+	@echo "                 PolarFire SoC NetApp - Makefile Help                   "
+	@echo "========================================================================"
+	@echo "1. Build Targets (make <target>):"
+	@echo "   lim-debug        : Build for execution from L2-LIM (Debug mode, -Og)."
+	@echo "   lim-release      : Build for execution from L2-LIM (Release mode, -O2)."
+	@echo "   ddr-debug        : Build for execution from DDR (Debug mode, -Og)."
+	@echo "   ddr-release      : Build for execution from DDR (Release mode, -O2)."
+	@echo "   envm-lim         : Build for eNVM boot, running in L2-LIM (Release mode)."
+	@echo ""
+	@echo "2. JTAG Debugging:"
+	@echo "   openocd          : Start OpenOCD connection to the board (Terminal 1)."
+	@echo "   debug-lim        : Build lim-debug, load via GDB, and halt at _start (Terminal 2)."
+	@echo "   debug-ddr        : Build ddr-debug, attach via GDB without resetting DDR (Terminal 2)."
+	@echo ""
+	@echo "3. Flashing & Deployment:"
+	@echo "   program-envm-lim : Build envm-lim and program into eNVM using Bootmode Programmer."
+	@echo "   program-job      : Program the FPGA using the .job file specified in board config."
+	@echo "   * Note on HSS    : For HSS YMODEM or SPI Flash boot, build lim-release or ddr-release"
+	@echo "                      and deploy the generated _payload.bin using mpfs-terminal."
+	@echo "                      (See README.md for exact commands)."
+	@echo ""
+	@echo "4. Utilities:"
+	@echo "   memusage         : Show memory usage summary for the active target."
+	@echo "   clean            : Remove all generated build files."
+	@echo "========================================================================"
