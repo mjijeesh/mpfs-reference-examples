@@ -64,8 +64,8 @@ else ifeq ($(MEM_TARGET),lim-release)
 else ifeq ($(MEM_TARGET),ddr-debug)
     BUILD_DIR     := build/$(BOARD)/ddr-debug
     CONFIG_DIR    := ddr-debug
-    LINKER_SCRIPT := $(BOARD_DIR)/platform_config/$(CONFIG_DIR)/linker/mpfs-ddr.ld
-    TARGET_DEFS   := -DMEM_TARGET_DDR
+    LINKER_SCRIPT := $(BOARD_DIR)/platform_config/$(CONFIG_DIR)/linker/mpfs-ddr-loaded-by-boot-loader.ld
+    TARGET_DEFS   := -DMEM_TARGET_DDR -DIMAGE_LOADED_BY_BOOTLOADER=1
     OPT_LEVEL     ?= -Og
 else ifeq ($(MEM_TARGET),ddr-release)
     BUILD_DIR     := build/$(BOARD)/ddr-release
@@ -267,12 +267,13 @@ openocd:
 	$(OPENOCD) -c "set DEVICE MPFS" -f board/microsemi-riscv.cfg
 
 debug debug-lim:
-	@$(MAKE) BOARD=$(BOARD) MEM_TARGET=lim-debug gdb-launch
+	@$(MAKE) BOARD=$(BOARD) MEM_TARGET=lim-debug gdb-lim
 
 debug-ddr:
-	@$(MAKE) BOARD=$(BOARD) MEM_TARGET=ddr-debug gdb-launch
+	@$(MAKE) BOARD=$(BOARD) MEM_TARGET=ddr-debug gdb-ddr
 
-gdb-launch: $(ELF_FILE)
+
+gdb-lim: $(ELF_FILE)
 	$(GDB) $(ELF_FILE) \
 		-ex 'set $$target_riscv=1' \
 		-ex 'set mem inaccessible-by-default off' \
@@ -280,6 +281,15 @@ gdb-launch: $(ELF_FILE)
 		-ex 'monitor reset halt' \
 		-ex 'load' \
 		-ex 'thread apply all set $$pc = _start' \
+		-ex 'continue'
+gdb-ddr: $(ELF_FILE)
+	$(GDB) $(ELF_FILE) \
+		-ex 'set $$target_riscv=1' \
+		-ex 'set mem inaccessible-by-default off' \
+		-ex 'target extended-remote localhost:3333' \
+		-ex 'monitor halt' \
+		-ex 'load' \
+		-ex 'thread apply 2-5 set $$pc = _start' \
 		-ex 'continue'
 
 clean:
