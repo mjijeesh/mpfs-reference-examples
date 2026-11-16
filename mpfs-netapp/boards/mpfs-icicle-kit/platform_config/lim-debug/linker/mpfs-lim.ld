@@ -47,14 +47,14 @@ MEMORY
     u54_2_itim (rwx) : ORIGIN = 0x01810000, LENGTH = 28k
     u54_3_itim (rwx) : ORIGIN = 0x01818000, LENGTH = 28k
     u54_4_itim (rwx) : ORIGIN = 0x01820000, LENGTH = 28k
-    l2lim (rwx)      : ORIGIN = 0x08000000, LENGTH = 256k
-    scratchpad(rwx)  : ORIGIN = 0x0A000000, LENGTH = 256k
+    l2lim (rwx)      : ORIGIN = 0x08000000, LENGTH = 512k
+    scratchpad(rwx)  : ORIGIN = 0x0A000000, LENGTH = 512k
     /* DDR sections example */
-    ddr_cached_32bit (rwx) : ORIGIN  = 0x80000000, LENGTH = 768M
-    ddr_non_cached_32bit (rwx) : ORIGIN  = 0xC0000000, LENGTH = 256M
+    ddr_cached_32bit (rwx) : ORIGIN  = 0x80000000, LENGTH = 128M
+    ddr_non_cached_32bit (rwx) : ORIGIN  = 0xC0000000, LENGTH = 128M
     ddr_wcb_32bit (rwx) : ORIGIN  = 0xD0000000, LENGTH = 256M
-    ddr_cached_38bit (rwx) : ORIGIN  = 0x1000000000, LENGTH = 1024M
-    ddr_non_cached_38bit (rwx) : ORIGIN  = 0x1400000000, LENGTH = 0k
+    ddr_cached_38bit (rwx) : ORIGIN  = 0x1000000000, LENGTH = 896M
+    ddr_non_cached_38bit (rwx) : ORIGIN  = 0x1400000000, LENGTH = 896M
     ddr_wcb_38bit (rwx) : ORIGIN  = 0x1800000000, LENGTH  = 0k
 }
 

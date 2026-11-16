@@ -60,13 +60,17 @@
  * your application is running on U54_1 and a bootloader running on E51 loads
  * your application to the target memory and kicks-off U54_1 to run it.
  */
+
+
+// Restrict HAL startup synchronization strictly to Hart 0 (E51)
 #ifndef MPFS_HAL_FIRST_HART
-#define MPFS_HAL_FIRST_HART  0
+#define MPFS_HAL_FIRST_HART    1
 #endif
 
 #ifndef MPFS_HAL_LAST_HART
-#define MPFS_HAL_LAST_HART   4
+#define MPFS_HAL_LAST_HART     4
 #endif
+
 
 /*
  * IMAGE_LOADED_BY_BOOTLOADER
@@ -94,7 +98,7 @@
  *   MPFS_HAL_LAST_HART above
  *
  */
-#define IMAGE_LOADED_BY_BOOTLOADER 0
+#define IMAGE_LOADED_BY_BOOTLOADER 1
 #if (IMAGE_LOADED_BY_BOOTLOADER == 0)
 #define MPFS_HAL_HW_CONFIG
 #endif
@@ -149,9 +153,24 @@
  * 1 => Clears memory
  * Note: If you are the zero stage bootloader, set this to one.
  */
+//#ifndef MPFS_HAL_CLEAR_MEMORY
+//#define MPFS_HAL_CLEAR_MEMORY  1
+//#endif
+
+
+/*
+ * Clear memory on startup
+ * Set to 0 because a previous stage bootloader (SFL) loaded the binary into RAM.
+ * Setting this to 1 will erase the application image during startup!
+ */
 #ifndef MPFS_HAL_CLEAR_MEMORY
-#define MPFS_HAL_CLEAR_MEMORY  1
+#define MPFS_HAL_CLEAR_MEMORY  0
 #endif
+
+
+
+
+
 
 /*
  * Comment out the lines to disable the corresponding hardware support not required
@@ -160,8 +179,8 @@
  * by MSS configurator settings, and items are enabled/disabled by this method.
  * The reason you may want to use below is to save code space.
  */
-#define SGMII_SUPPORT
-#define DDR_SUPPORT
+//#define SGMII_SUPPORT
+//#define DDR_SUPPORT
 #define MSSIO_SUPPORT
 
 /*
