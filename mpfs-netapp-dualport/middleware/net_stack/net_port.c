@@ -144,6 +144,26 @@ static net_port_ctx_t *find_port_by_mac(const void *p_mac)
     return NULL;
 }
 
+struct netif *net_port_route_src(const ip4_addr_t *src, const ip4_addr_t *dest)
+{
+    (void)dest;
+
+    if ((src == NULL) || ip4_addr_isany(src)) {
+        return NULL;
+    }
+
+    for (uint32_t i = 0U; i < NET_PORT_COUNT; ++i) {
+        struct netif *netif = &g_ports[i].netif;
+        if (netif_is_up(netif) && netif_is_link_up(netif) &&
+            !ip4_addr_isany(netif_ip4_addr(netif)) &&
+            ip4_addr_cmp(src, netif_ip4_addr(netif))) {
+            return netif;
+        }
+    }
+
+    return NULL;
+}
+
 static void mac_tx_callback(void *p_mac, uint32_t queue_no,
                             mss_mac_tx_desc_t *cdesc, void *p_user_data)
 {
@@ -335,9 +355,16 @@ void net_port_init(void)
 
         PLIC_EnableIRQ(hw->irqn);
 
+        
         mss_mac_speed_t speed = MSS_MAC_1000MBPS;
         uint8_t fullduplex = 1U;
         ctx->last_link_up = MSS_MAC_get_link_status(mac, &speed, &fullduplex);
+        if (ctx->last_link_up != 0U) {
+            netif_set_link_up(&ctx->netif);
+        } else {
+            netif_set_link_down(&ctx->netif);
+        }
+
 
 #if LWIP_DHCP
         ctx->dhcp_done  = 0U;

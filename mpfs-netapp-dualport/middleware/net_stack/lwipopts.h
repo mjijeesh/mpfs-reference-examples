@@ -53,4 +53,11 @@
 #define HTTPD_USE_CUSTOM_FSDATA         1
 #define TFTP_MAX_FILENAME_LEN           64
 
+
+/* Source-based IPv4 routing: ensure replies exit the interface owning src IP */
+struct netif;
+struct ip4_addr;
+struct netif *net_port_route_src(const struct ip4_addr *src, const struct ip4_addr *dest);
+#define LWIP_HOOK_IP4_ROUTE_SRC(src, dest) net_port_route_src((src), (dest))
+
 #endif /* LWIPOPTS_H */

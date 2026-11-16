@@ -57,9 +57,9 @@ extern uint8_t PLIC_mac1_int_IRQHandler(void);
         .phy_mac_autonegotiate = MSS_MAC_VSC8662_mac_autonegotiate,                 \
         .phy_get_link_status   = MSS_MAC_VSC8662_phy_get_link_status,               \
         .mac_addr              = { 0x00, 0x04, 0xA3, 0x11, 0x22, 0x33 },            \
-        .static_ip             = { 192, 168, 30, 51 },                              \
+        .static_ip             = { 192, 168, 20, 51 },                              \
         .static_mask           = { 255, 255, 255, 0 },                              \
-        .static_gw             = { 192, 168, 30, 1 },                               \
+        .static_gw             = { 192, 168, 20, 1 },                               \
     }
 
 void board_periph_init(void);
