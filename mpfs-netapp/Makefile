@@ -26,19 +26,23 @@ ifeq ($(wildcard $(BOARD_DIR)),)
     $(error Board '$(BOARD_DIR)' not found! Available: $(AVAILABLE_BOARDS))
 endif
 
-# 1. Toolchain & Board Defaults
+# 1. Toolchain & Board Configuration
 include toolchain.mk
 
 DIE             ?= MPFS095T
 PACKAGE         ?= FCSG325
 STDIO_UART      ?= 4
-FLASH_BOOT_ADDR ?= 0x00020000
-DDR_ADDR        ?= 0x80000000
 JOB_FILE        ?= $(BOARD_DIR)/fpga_design/$(BOARD).job
 XML_CONFIG_DIR  ?= $(BOARD_DIR)/fpga_design/design_description
 CONFIG_OUT_DIR  ?= $(BOARD_DIR)
 
 include $(BOARD_DIR)/board.mk
+
+# Fallbacks if a custom board.mk omits optional hooks
+BOARD_SRCS_C     ?= $(wildcard $(BOARD_DIR)/*.c)
+BOARD_INC_DIRS   ?= $(BOARD_DIR)
+BOARD_PHY_DRIVER ?= platform/drivers/mss/mss_ethernet_mac/null_phy.c
+OPENOCD_CFG      ?= -c "set DEVICE MPFS" -f board/microsemi-riscv.cfg
 
 BUILD_TIMESTAMP ?= $(shell $(PYTHON) -c "import datetime; print(datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'))" 2>/dev/null || date +"%Y-%m-%d %H:%M:%S")
 
@@ -90,7 +94,7 @@ ARCH_FLAGS := -march=rv64gc -mabi=lp64d -mcmodel=medany \
 INCLUDE_DIRS := application application/inc \
                 $(MIDDLEWARE_INC_DIRS) \
                 platform platform/mpfs_hal platform/hal \
-                $(BOARD_DIR) $(BOARD_DIR)/fpga_design_config \
+                $(BOARD_INC_DIRS) $(BOARD_DIR)/fpga_design_config \
                 $(BOARD_DIR)/platform_config/$(CONFIG_DIR) \
                 $(BOARD_DIR)/platform_config/$(CONFIG_DIR)/mpfs_hal_config
 
@@ -111,13 +115,13 @@ ifeq ($(findstring riscv-none-elf,$(CROSS_COMPILE)),riscv-none-elf)
     LDFLAGS += -Wl,--no-warn-rwx-segments
 endif
 
-
 # 4. Sources & Objects
-APP_SRCS_C := $(BOARD_DIR)/board_init.c \
+APP_SRCS_C := $(BOARD_SRCS_C) \
               $(wildcard application/hart*/*.c)
 
 DRIVER_SRCS_C := platform/drivers/mss/mss_mmuart/mss_uart.c \
-                 $(wildcard platform/drivers/mss/mss_ethernet_mac/*.c)
+                 platform/drivers/mss/mss_ethernet_mac/mss_ethernet_mac.c \
+                 $(BOARD_PHY_DRIVER)
 
 HAL_SRCS_C := platform/mpfs_hal/startup_gcc/newlib_stubs.c \
               platform/mpfs_hal/startup_gcc/system_startup.c \
@@ -133,7 +137,6 @@ SRCS_ASM := $(sort \
 
 OBJS := $(patsubst %.c, $(BUILD_DIR)/%.o, $(SRCS_C)) \
         $(patsubst %.S, $(BUILD_DIR)/%.o, $(SRCS_ASM))
-
 
 ELF_FILE     := $(BUILD_DIR)/$(TARGET).elf
 BIN_FILE     := $(BUILD_DIR)/$(TARGET).bin
@@ -216,7 +219,7 @@ $(PAYLOAD_FILE): $(ELF_FILE) $(BUILD_DIR)/payload.yaml $(HSS_PAYLOAD_GEN)
 	@$(HSS_PAYLOAD_GEN) -c $(BUILD_DIR)/payload.yaml $@
 	@cp -f $@ $(BUILD_DIR)/payload.bin
 
-# 7. Build, Boot, Flash & JTAG Debug Workflows
+# 7. Build, Flash & JTAG Debug Workflows
 lim-debug lim-release ddr-debug ddr-release envm-lim:
 	@$(MAKE) BOARD=$(BOARD) MEM_TARGET=$@ all
 
@@ -231,7 +234,7 @@ program-job:
 	$(FPEXPRESS) SCRIPT:build/fp_job/program_job.tcl
 
 openocd:
-	$(OPENOCD) -c "set DEVICE MPFS" -f board/microsemi-riscv.cfg
+	$(OPENOCD) $(OPENOCD_CFG)
 
 debug debug-lim:
 	@$(MAKE) BOARD=$(BOARD) MEM_TARGET=lim-debug gdb-lim
@@ -266,7 +269,9 @@ help:
 	@echo "========================================================================"
 	@echo "                 PolarFire SoC NetApp - Makefile Help                   "
 	@echo "========================================================================"
-	@echo "1. Build Targets (make <target>):"
+	@echo "Available Boards: $(AVAILABLE_BOARDS) (select via BOARD=<name>)"
+	@echo ""
+	@echo "1. Build Targets (make BOARD=<board> <target>):"
 	@echo "   lim-debug        : Build for execution from L2-LIM (Debug mode, -Og)."
 	@echo "   lim-release      : Build for execution from L2-LIM (Release mode, -O2)."
 	@echo "   ddr-debug        : Build for execution from DDR (Debug mode, -Og)."
@@ -275,12 +280,12 @@ help:
 	@echo ""
 	@echo "2. JTAG Debugging:"
 	@echo "   openocd          : Start OpenOCD connection to the board (Terminal 1)."
-	@echo "   debug-lim        : Build lim-debug, load via GDB, and halt at _start (Terminal 2)."
-	@echo "   debug-ddr        : Build ddr-debug, attach via GDB without resetting DDR (Terminal 2)."
+	@echo "   debug-lim        : Build lim-debug, reset/load via GDB, and run (Terminal 2)."
+	@echo "   debug-ddr        : Build ddr-debug, halt/load via GDB without resetting DDR (Terminal 2)."
 	@echo ""
 	@echo "3. Flashing & Deployment:"
 	@echo "   program-envm-lim : Build envm-lim and program into eNVM using Bootmode Programmer."
-	@echo "   program-job      : Program the FPGA using the .job file specified in board config."
+	@echo "   program-job      : Program the FPGA using the .job file specified in board.mk."
 	@echo "   * Note on HSS    : For HSS YMODEM or SPI Flash boot, build lim-release or ddr-release"
 	@echo "                      and deploy the generated _payload.bin using mpfs-terminal."
 	@echo "                      (See README.md for exact commands)."

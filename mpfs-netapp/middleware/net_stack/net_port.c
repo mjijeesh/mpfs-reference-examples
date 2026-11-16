@@ -225,13 +225,12 @@ void net_port_init(void)
     g_mac_cfg.pcs_phy_addr          = APP_PCS_PHY_ADDR;
     g_mac_cfg.interface_type        = APP_PHY_INTERFACE;
 
-#if defined(BOARD_MPFS_DISCO_KIT)
-    g_mac_cfg.phy_autonegotiate     = MSS_MAC_VSC8221_phy_autonegotiate;
-    g_mac_cfg.phy_mac_autonegotiate = MSS_MAC_VSC8221_mac_autonegotiate;
-    g_mac_cfg.phy_get_link_status   = MSS_MAC_VSC8221_phy_get_link_status;
-    g_mac_cfg.phy_init              = MSS_MAC_VSC8221_phy_init;
-    g_mac_cfg.phy_set_link_speed    = MSS_MAC_VSC8221_phy_set_link_speed;
-#endif
+    g_mac_cfg.phy_autonegotiate     = APP_PHY_AUTONEGOTIATE;
+    g_mac_cfg.phy_mac_autonegotiate = APP_PHY_MAC_AUTONEGOTIATE;
+    g_mac_cfg.phy_get_link_status   = APP_PHY_GET_LINK_STATUS;
+    g_mac_cfg.phy_init              = APP_PHY_INIT;
+    g_mac_cfg.phy_set_link_speed    = APP_PHY_SET_LINK_SPEED;
+    
 
     MSS_MAC_init(APP_MAC, &g_mac_cfg);
 
@@ -244,7 +243,7 @@ void net_port_init(void)
     }
 
     snprintf(line, sizeof(line),
-             "[MAC] GEM0 TBI/SGMII + VSC8221 ready (RX ring=%u, avail_rx=%u, avail_tx=%u)\r\n",
+             "[MAC] " APP_PHY_NAME " ready (RX ring=%u, avail_rx=%u, avail_tx=%u)\r\n",
              (unsigned int)MSS_MAC_RX_RING_SIZE,
              (unsigned int)APP_MAC->queue[0].nb_available_rx_desc,
              (unsigned int)APP_MAC->queue[0].nb_available_tx_desc);

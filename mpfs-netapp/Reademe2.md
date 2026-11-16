@@ -1,5 +1,174 @@
 # PolarFire SoC Bare-Metal Network Application (`mpfs-netapp`)
 
+`mpfs-netapp` is a bare-metal RISC-V network application for the Microchip PolarFire SoC built on `mpfs_hal` and a polling (`NO_SYS = 1`) **lwIP** TCP/IP stack. It features a completely **board-agnostic architecture**, allowing it to run natively from on-chip **L2-LIM SRAM** or external **DDR** across different development kits (e.g., Discovery Kit, Icicle Kit) or custom hardware without duplicating application code.
+
+It provides DHCP/static IPv4 networking, ICMP ping, an HTTP web server with CGI board control, and an in-memory TFTP server.
+
+## 1. Architecture & Features
+
+* **Multi-Board Portability (HAL):**
+  Application logic and network stacks are strictly decoupled from hardware specifics. Board-specific routing, PHY drivers, and clock initializations are dynamically injected at compile-time via `boards/<board-name>/board_config.h` and `board.mk`.
+  
+* **Multi-Hart Execution Model:**
+  * **E51 (Monitor Hart):** In standalone debug targets (`lim-debug`), E51 executes `mss_nwc_init()` to configure MSS PLLs, clocks, DDR, and SGMII before waking the U54 application harts. In bootloader-assisted targets, Hart Software Services (HSS) remains resident on E51 and dispatches the U54 harts directly.
+  * **U54_1 (Application Hart):** Initializes the board-defined stdio UART, brings up the MAC + PHY, and runs the cooperative lwIP polling loop (`net_port_poll()`), HTTP server, and TFTP server.
+  * **U54_2 – U54_4:** Satisfy the `mpfs_hal` startup barrier and enter low-power `wfi` loops.
+
+* **Ethernet Driver (`middleware/net_stack/net_port.c`):**
+  * Drives the board-defined MAC over TBI/SGMII connected to a dynamic Gigabit Ethernet PHY with link-speed auto-negotiation.
+  * Decouples PLIC interrupt context from lwIP using a lock-free ring (`g_rx_raw_queue`).
+
+* **IPv4 & Application Services:**
+  * **DHCP + Static Fallback:** Starts DHCP discovery on link-up with an 8-second timeout, falling back to a board-defined static IPv4 configuration.
+  * **HTTP Server (`TCP/80`) & TFTP Server (`UDP/69`).**
+
+## 2. Repository Layout
+
+```text
+mpfs-netapp/
+├── Makefile                        # Top-level multi-target build & debug rules
+├── toolchain.mk                    # RISC-V GCC, OpenOCD, GDB paths
+├── application/                    # 100% Board-Agnostic Core Logic
+│   ├── inc/                        
+│   ├── hart1/u54_1.c               # Main network loop & UART diagnostics
+│   └── hart2..4/                   # Secondary U54 WFI stubs
+├── boards/                         # Hardware Abstraction Layer (HAL)
+│   └── mpfs-disco-kit/
+│       ├── board.mk                # Board variables (DIE, PACKAGE, PHY driver, CFLAGS)
+│       ├── board_config.h          # Hardware macros (APP_UART, APP_MAC, APP_PHY_*)
+│       ├── board_init.c            # Implements board_periph_init()
+│       ├── fpga_design_config/     # Libero-generated hardware headers
+│       └── platform_config/        # Linker scripts & HAL memory configs
+├── middleware/                     # 100% Board-Agnostic Network Stack
+│   ├── lwip/src/                   # Upstream lwIP core
+│   └── net_stack/                  # lwIP ports, MAC driver, HTTP & TFTP servers
+└── platform/
+    ├── drivers/mss/                # Microchip bare-metal peripheral drivers
+    ├── hal/                        # RISC-V HAL & IRQ helpers
+    └── mpfs_hal/                   # PolarFire SoC startup & hardware configuration
+```
+
+## 3. Memory Architecture & Build Targets
+
+The `Makefile` infers the memory target automatically and generates artifacts in `build/<board>/<target>/`:
+
+| Make Target | Linker Script | Base Address | Boot Dependency |
+| ----- | ----- | ----- | ----- |
+| **`lim-debug`** | `mpfs-lim.ld` | `0x08000000` (512k) | None (Standalone JTAG) |
+| **`lim-release`** | `mpfs-lim-app.ld` | `0x08040000` (256k) | HSS Bootloader |
+| **`ddr-debug`** | `mpfs-ddr-loaded-...ld`| `0x80000000` (128M) | HSS (Soft JTAG Attach) |
+| **`ddr-release`** | `mpfs-ddr-loaded-...ld`| `0x80000000` (128M) | HSS Bootloader |
+| **`envm-lim`** | `mpfs-envm-lma-...ld`| `0x20220100` (eNVM)| None (eNVM -> L2-LIM) |
+
+> *Note:* L2-LIM builds (`-DMEM_TARGET_LIM`) dynamically shrink DMA descriptors, rx queues, lwIP heaps, and the TFTP RAM-disk to fit safely inside limited on-chip SRAM.
+
+## 4. Step-by-Step Build & Deploy Tutorial
+
+### Workflow A: Build & Audit Memory Usage
+
+Compile a target and verify its memory footprint:
+```bash
+make BOARD=mpfs-disco-kit lim-debug
+make BOARD=mpfs-disco-kit MEM_TARGET=lim-debug memusage
+```
+*(Expected: Clean compile, zero errors, and a percentage breakdown of memory usage).*
+
+### Workflow B: Boot via HSS YMODEM (`mpfs-terminal`)
+
+Stream a release payload to the pre-flashed HSS bootloader via USB-UART:
+1. Open App UART: `python3 -m serial.tools.miniterm /dev/ttyUSBY 115200`
+2. Power-cycle the board.
+3. Stream Payload (Terminal 2):
+   ```bash
+   mpfs-terminal /dev/ttyUSBX --kernel build/mpfs-disco-kit/ddr-release/mpfs-net-app_payload.bin --kernel-adr 0x80000000
+   ```
+*(Expected: HSS receives the payload via YMODEM and immediately boots the application. The banner and IP address appear on the App UART).*
+
+### Workflow C: JTAG Debugging (`openocd` + GDB)
+
+1. Start OpenOCD: `make BOARD=mpfs-disco-kit openocd`
+2. Open App UART: `python3 -m serial.tools.miniterm /dev/ttyUSBY 115200`
+3. Launch GDB:
+   * **Standalone LIM:** `make BOARD=mpfs-disco-kit debug-lim` (Issues hard reset, E51 configures hardware).
+   * **DDR with HSS:** *Power-cycle board and wait 2 seconds for HSS to train DDR.* Then run `make BOARD=mpfs-disco-kit debug-ddr` (Issues soft halt, preventing DDR controller crash).
+
+## 5. Porting to a New Board
+
+Thanks to the hardware abstraction layer, adding a custom board requires **zero modifications** to the `application/`, `middleware/`, or root `Makefile`.
+
+To create support for a custom board (e.g., `my-custom-board`):
+
+1. **Create the Directory:**
+   ```bash
+   mkdir -p boards/my-custom-board/{fpga_design,platform_config}
+   ```
+2. **Define `board.mk`:** Create `boards/my-custom-board/board.mk` to specify the SoC variant and PHY drivers:
+   ```makefile
+   DIE              := MPFS250T
+   PACKAGE          := FCVG484
+   BOARD_SRCS_C     := $(BOARD_DIR)/board_init.c
+   BOARD_INC_DIRS   := $(BOARD_DIR)
+   
+   # Include core MAC drivers and your specific PHY
+   BOARD_PHY_DRIVER := platform/drivers/mss/mss_ethernet_mac/mss_ethernet_mac.c \
+                       platform/drivers/mss/mss_ethernet_mac/null_phy.c \
+                       platform/drivers/mss/mss_ethernet_mac/ti_dp83867_phy.c
+   ```
+3. **Map Hardware in `board_config.h`:** Create `boards/my-custom-board/board_config.h` to define peripherals:
+   ```c
+   #ifndef BOARD_CONFIG_H
+   #define BOARD_CONFIG_H
+   #include "drivers/mss/mss_mmuart/mss_uart.h"
+   #include "drivers/mss/mss_ethernet_mac/phy.h"
+
+   #define APP_BOARD_NAME          "My Custom Board"
+   #define APP_UART                (&g_mss_uart1_lo)  /* Example: Uses UART1 */
+   #define APP_MAC                 (&g_mac1)          /* Example: Uses MAC1 */
+   
+   /* Map specific PHY Callbacks */
+   #define APP_PHY_INIT            MSS_MAC_DP83867_phy_init
+   /* ... other PHY mappings ... */
+   
+   void board_periph_init(void);
+   #endif
+   ```
+4. **Implement Initializer (`board_init.c`):**
+   ```c
+   #include "board_config.h"
+   void board_periph_init(void) {
+       /* Turn on clocks for your specific UART/MAC */
+       mss_config_clk_rst(MSS_PERIPH_MMUART1, (uint8_t)MPFS_HAL_FIRST_HART, PERIPHERAL_ON);
+       mss_config_clk_rst(MSS_PERIPH_MAC1,    (uint8_t)MPFS_HAL_FIRST_HART, PERIPHERAL_ON);
+       PLIC_init();
+       __enable_irq();
+   }
+   ```
+5. **Build for the New Board:**
+   ```bash
+   make BOARD=my-custom-board ddr-debug
+   ```
+
+## 6. Runtime Verification & Network Testing
+
+Once booted, the application UART will display:
+```text
+====================================================================
+  PolarFire SoC Bare-Metal NetApp (PolarFire SoC Discovery Kit)
+  Entry @ 0x80000000 | Build: 2026-11-16 12:00:00
+====================================================================
+[MAC] GEM0 TBI/SGMII + VSC8221 ready (RX ring=32, avail_rx=32, avail_tx=1001)
+[DHCP] Started DHCP discovery (8s timeout -> static fallback)...
+[NET @ T+8012 ms] Link : UP (1000 Mbps, Full-Duplex)
+[NET] IP   : 192.168.20.50
+```
+
+* **Ping Test:** `ping -c 4 <board-ip>`
+* **Web Server Test:** `curl -i http://<board-ip>/`
+* **TFTP Test:** `tftp -m octet <board-ip> -c put testfile.bin` (Press `t` in the serial console to view dynamic RAM-disk capacity).
+
+
+# PolarFire SoC Bare-Metal Network Application (`mpfs-netapp`)
+
 `mpfs-netapp` is a bare-metal RISC-V network application for the **Microchip PolarFire SoC Discovery Kit** (`MPFS095T` / `FCSG325`) built on `mpfs_hal` and a polling (`NO_SYS = 1`) **lwIP** TCP/IP stack. It runs natively from on-chip **L2-LIM SRAM** (both standalone via JTAG and as an HSS bootloader payload) or from external **DDR**, providing DHCP/static IPv4 networking, ICMP ping, an HTTP web server with CGI board control, and an in-memory TFTP server.
 
 ## 1. Architecture & Features
