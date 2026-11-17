@@ -1,3 +1,178 @@
+
+
+
+# MPFS Bare-Metal Dual-Ethernet Application Guide
+
+This document provides a comprehensive guide to building, configuring, and running a dual-port bare-metal Ethernet application (using lwIP) on the Microchip PolarFire SoC Icicle Kit. 
+
+It covers the hardware quirks of the VSC8662 PHY, memory optimizations in lwIP, the software architecture of the network polling loop, and detailed instructions for loading the payload via HSS SerialBoot or Netboot.
+
+---
+
+## 1. Ethernet PHY & MAC Bring-Up Settings
+
+The Icicle Kit uses a **Microchip VSC8662 Dual-Port SGMII PHY**. While both PolarFire SoC MACs (GEM0 and GEM1) connect to this PHY for data routing, they share a **single MDIO management bus**, which is physically wired only to GEM1.
+
+### Hardware Mapping
+| Parameter | Port J2 (GEM1) | Port J1 (GEM0) |
+| :--- | :--- | :--- |
+| **MAC Instance** | `&g_mac1` | `&g_mac0` |
+| **MDIO Controller** | `NULL` (Native GEM1 MDIO) | `&g_mac1` (Routed via GEM1) |
+| **PHY Address** | `9U` (Channel 1) | `8U` (Channel 0) |
+| **Interface** | TBI / SGMII | TBI / SGMII |
+
+### Initialization Requirements
+1. **Clocking:** Both `MSS_PERIPH_MAC0` and `MSS_PERIPH_MAC1` must be brought out of reset simultaneously in `board_periph_init()`.
+2. **Order of Initialization:** Because GEM0 uses GEM1's MDIO block to configure its PHY, **GEM1 (Port J2) must be initialized first**. In the codebase, this is managed by placing GEM1 first in the `NET_PORT_LIST` array.
+
+---
+
+## 2. lwIP Configuration (`lwipopts.h`)
+
+The application uses a bare-metal, interrupt-driven "NO_SYS" lwIP architecture (no RTOS). 
+
+### Memory Pool Sizing (`ddr-release`)
+Because the application runs from the massive DDR space, lwIP's pools are sized generously to support high-throughput HTTP and TFTP on both ports concurrently:
+* `MEM_SIZE`: 128 KB (General heap for dynamic allocations).
+* `PBUF_POOL_SIZE`: 32 (Pre-allocated packet buffers).
+* `MEMP_NUM_TCP_PCB`: 16 (Supports up to 16 concurrent HTTP TCP connections).
+* `MEMP_NUM_UDP_PCB`: 8 (Sufficient for DHCP and multiple TFTP streams).
+* `MEMP_NUM_SYS_TIMEOUT`: 16 (Required for ARP, DHCP, and TCP software timers).
+
+### Source-Based IPv4 Routing
+By default, lwIP routes all outbound packets out of the first interface that matches the destination subnet. If both J1 and J2 are connected to the same LAN (e.g., `192.168.20.x`), replies to requests arriving on J1 would incorrectly exit via J2.
+To solve this, a hook is defined in `lwipopts.h`:
+```c
+struct netif *net_port_route_src(const struct ip4_addr *src, const struct ip4_addr *dest);
+#define LWIP_HOOK_IP4_ROUTE_SRC(src, dest) net_port_route_src((src), (dest))
+```
+This forces lwIP to transmit outbound replies through the specific physical interface (`netif`) that owns the responding source IP address.
+
+---
+
+## 3. Application Code Architecture
+
+The application avoids RTOS threads by utilizing an event-driven superloop and interrupt-safe circular queues.
+
+### `u54_1.c` (Main Entry Point)
+1. **Hardware Init:** Calls `board_periph_init()` to enable clocks.
+2. **UART Init:** Configures `MMUART1` (115200 baud) for application logging.
+3. **Network Init:** Calls `net_port_init()` to bring up both MACs and lwIP.
+4. **App Init:** Initializes the Web Server (`web_server_init()`) and TFTP server (`tftp_server_app_init()`).
+5. **Superloop:** Endlessly loops calling `net_port_poll()` and `poll_uart_cli()`.
+
+### `net_port.c` (Network Stack Manager)
+* **`net_port_init()`:**
+  Iterates over `NET_PORT_LIST`. For each port, it resets custom RX/TX ring trackers, configures the `mss_mac_cfg_t` struct, invokes `MSS_MAC_init()`, allocates RX descriptors, adds the interface to lwIP via `netif_add()`, and kicks off `dhcp_start()`.
+* **`mac_rx_callback()` (Interrupt Context):**
+  Triggered by the PLIC when a packet arrives. It copies the raw packet data into a lockless software ring buffer (`rx_raw_queue`) and returns immediately. **It does not call lwIP functions directly**, keeping ISR execution extremely short.
+* **`net_port_poll()` (Main Loop Context):**
+  Drains the `rx_raw_queue`, converting raw frames into lwIP `pbuf` structures, and passes them up the stack via `netif->input()`. It also polls the physical link status (`MSS_MAC_get_link_status()`), applies static IP fallbacks if DHCP times out, and executes lwIP software timers via `sys_check_timeouts()`.
+* **`low_level_output()`:**
+  Invoked by lwIP to transmit a packet. It copies the `pbuf` chain into the hardware `mac_tx_buffer`, briefly disables the MAC IRQ to prevent race conditions, and triggers transmission via `MSS_MAC_send_pkt()`.
+
+---
+
+## 4. Building the Project
+
+Ensure you are in a Linux environment with the RISC-V GNU Toolchain (`riscv-none-elf-gcc`) installed and added to your `$PATH`.
+
+1. Navigate to the `mpfs-netapp` directory.
+2. Ensure the payload generator is executable:
+   ```bash
+   chmod +x tools/hss-payload-generator/hss-payload-generator
+   ```
+3. Build the DDR-Targeted Release binary:
+   ```bash
+   make BOARD=mpfs-icicle-kit clean ddr-release
+   ```
+   **Output:** The build generates an ELF file and packages it into an HSS-compatible binary:
+   `build/mpfs-icicle-kit/ddr-release/mpfs-net-app_payload.bin`
+
+---
+
+## 5. Loading the Application
+
+The PolarFire SoC relies on the Hart Software Services (HSS) running on the E51 core to initialize DDR and load payloads into RAM for the U54 application cores.
+
+### Option A: Loading via HSS SerialBoot (Recommended for Dev)
+You can inject the payload directly into DDR over UART using the `mpfs-terminal.py` script.
+1. Connect the Icicle Kit's UART USB.
+2. Run the loader script on the HSS console (`MMUART0`):
+   ```bash
+   python3 tools/mpfs-terminal.py /dev/ttyUSB0 \
+       --kernel build/mpfs-icicle-kit/ddr-release/mpfs-net-app_payload.bin
+   ```
+
+   then use `serialboot` command in the cli  to start downlaod process.
+   
+*(The script will send the SFL magic handshake, negotiate the transfer, upload the payload into DDR, and command the HSS to jump to the application entry point).*
+
+### Option B: Loading via HSS Netboot (TFTP)
+1. Host the `mpfs-net-app_payload.bin` on a local TFTP server (e.g., `192.168.20.94`), renaming it to `boot.bin`.
+2. Connect a terminal to the HSS console (`/dev/ttyUSB0` at 115200 baud).
+3. Interrupt the boot sequence by pressing a key to enter TinyCLI.
+4. Execute the Netboot command:
+   ```text
+   >> netboot 192.168.20.94 boot.bin
+   ```
+*(The HSS will fetch the file over the network, decode the chunks, and dispatch the U54 cores).*
+
+---
+
+## 6. Expected Output Logs
+
+Open a terminal to the Application Console (`MMUART1`, usually `/dev/ttyUSB1` at 115200 baud). Once the payload is dispatched, you should see:
+
+```text
+========================================================
+ PolarFire SoC Icicle Kit - Bare-Metal lwIP NetApp
+ Entry @ 0x103fc00000 | Boot T+12 ms | Press 'h' for help
+========================================================
+[INIT 1/7] SYSREG CLOCK_CR=0xffffffff  SOFT_RESET_CR=0x00000000
+[MAC e0] GEM1 TBI/SGMII + VSC8662 (J2) ready (RX ring=16, avail_rx=15, avail_tx=16)
+[DHCP e0] Started DHCP discovery (8s timeout -> static fallback)...
+[MAC e1] GEM0 TBI/SGMII + VSC8662 (J1) ready (RX ring=16, avail_rx=15, avail_tx=16)
+[DHCP e1] Started DHCP discovery (8s timeout -> static fallback)...
+
+[NET e0 @ T+312 ms] GEM1 TBI/SGMII + VSC8662 (J2)
+[NET e0] Link : DOWN (N/A, N/A)
+[NET e0] MAC  : 00:04:A3:11:22:34 (PHY addr 9)
+[NET e0] IP   : 0.0.0.0 | Mask: 0.0.0.0 | GW: 0.0.0.0
+[NET e0] Pkts : RX=0  TX=0
+
+[NET e1 @ T+315 ms] GEM0 TBI/SGMII + VSC8662 (J1)
+[NET e1] Link : DOWN (N/A, N/A)
+[NET e1] MAC  : 00:04:A3:11:22:33 (PHY addr 8)
+[NET e1] IP   : 0.0.0.0 | Mask: 0.0.0.0 | GW: 0.0.0.0
+[NET e1] Pkts : RX=0  TX=0
+
+[INIT 7/7] Starting HTTP (TCP/80) & TFTP (UDP/69) @ T+318 ms...
+[APP] Initialization complete. Entering main poll loop.
+```
+
+**Upon connecting cables to both ports:**
+```text
+[PHY e0] Link UP -> 1000 Mbps Full-Duplex
+[PHY e1] Link UP -> 1000 Mbps Full-Duplex
+
+[DHCP e0] Lease acquired!
+[NET e0 @ T+2145 ms] GEM1 TBI/SGMII + VSC8662 (J2)
+[NET e0] Link : UP (1000 Mbps, Full-Duplex)
+[NET e0] MAC  : 00:04:A3:11:22:34 (PHY addr 9)
+[NET e0] IP   : 192.168.20.155 | Mask: 255.255.255.0 | GW: 192.168.20.1
+[NET e0] Pkts : RX=14  TX=3
+
+[DHCP e1] Lease acquired!
+[NET e1 @ T+2890 ms] GEM0 TBI/SGMII + VSC8662 (J1)
+[NET e1] Link : UP (1000 Mbps, Full-Duplex)
+[NET e1] MAC  : 00:04:A3:11:22:33 (PHY addr 8)
+[NET e1] IP   : 192.168.20.156 | Mask: 255.255.255.0 | GW: 192.168.20.1
+[NET e1] Pkts : RX=21  TX=5
+```
+You can now press `s` at any time to dump the current packet counters and link status.
+
+
 ## Feature Update: L2-LIM Execution Support (`lim-app`)
 
 This update enables the bare-metal lwIP network application (DHCP, ICMP Ping, HTTP Server on TCP/80, and TFTP RAM-Disk Server on UDP/69) to execute directly from on-chip **L2 Loosely Integrated Memory (L2-LIM)** on the **PolarFire SoC Discovery Kit** when booted via Hart Software Services (HSS).
