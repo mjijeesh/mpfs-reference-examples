@@ -27,11 +27,17 @@
 #define RX_QUEUE_SIZE           64U
 #endif
 
+/**
+ * @brief Holds a single raw ethernet frame queued by the RX interrupt.
+ */
 typedef struct {
     uint8_t  data[PACKET_MAX];
     uint32_t len;
 } raw_frame_t;
 
+/**
+ * @brief Static hardware configuration for a single Ethernet port.
+ */
 typedef struct {
     const char          if_name[2];
     const char         *label;
@@ -54,6 +60,9 @@ typedef struct {
     uint8_t             static_gw[4];
 } net_port_hw_t;
 
+/**
+ * @brief Dynamic runtime context for a single Ethernet port.
+ */
 typedef struct {
     const net_port_hw_t *hw;
     struct netif         netif;
@@ -61,6 +70,7 @@ typedef struct {
     raw_frame_t          rx_raw_queue[RX_QUEUE_SIZE];
     volatile uint32_t    rx_q_head;
     volatile uint32_t    rx_q_tail;
+    /* 16-byte aligned hardware buffers required by the MAC DMA engine */
     uint8_t              mac_rx_buffer[MSS_MAC_RX_RING_SIZE][RX_SLOT_SIZE] __attribute__((aligned(16)));
     uint8_t              mac_tx_buffer[TX_RING_SLOTS][TX_SLOT_SIZE] __attribute__((aligned(16)));
     volatile uint32_t    tx_ring_head;
@@ -100,30 +110,44 @@ typedef struct {
     }
 #endif
 
+/* Global array instantiating hardware config for all defined network ports */
 static const net_port_hw_t g_port_hw[] = {
     NET_PORT_LIST
 };
 
 #define NET_PORT_COUNT ((uint32_t)(sizeof(g_port_hw) / sizeof(g_port_hw[0])))
 
+/* Global array holding runtime state for all network ports */
 static net_port_ctx_t g_ports[NET_PORT_COUNT];
 
+/**
+ * @brief Helper to print network logs over the application UART.
+ */
 static void net_log(const char *s)
 {
     MSS_UART_polled_tx_string(APP_UART, (const uint8_t *)s);
 }
 
+/**
+ * @brief Fetches system uptime in milliseconds via the RISC-V CLINT timer.
+ */
 static uint32_t now_ms(void)
 {
     uint64_t ticks = *(volatile uint64_t *)CLINT_MTIME_ADDR;
     return (uint32_t)(ticks / 1000ULL);
 }
 
+/**
+ * @brief Required lwIP hook: returns system time in ms.
+ */
 u32_t sys_now(void)
 {
     return (u32_t)now_ms();
 }
 
+/**
+ * @brief Helper to stringify MAC speed enum values.
+ */
 static const char *speed_to_str(mss_mac_speed_t speed)
 {
     switch (speed) {
@@ -134,6 +158,9 @@ static const char *speed_to_str(mss_mac_speed_t speed)
     }
 }
 
+/**
+ * @brief Look up a port context structure by its hardware MAC pointer.
+ */
 static net_port_ctx_t *find_port_by_mac(const void *p_mac)
 {
     for (uint32_t i = 0U; i < NET_PORT_COUNT; ++i) {
@@ -144,6 +171,9 @@ static net_port_ctx_t *find_port_by_mac(const void *p_mac)
     return NULL;
 }
 
+/**
+ * @brief Called by lwIP to dynamically route outbound traffic to the correct interface.
+ */
 struct netif *net_port_route_src(const ip4_addr_t *src, const ip4_addr_t *dest)
 {
     (void)dest;
@@ -164,6 +194,9 @@ struct netif *net_port_route_src(const ip4_addr_t *src, const ip4_addr_t *dest)
     return NULL;
 }
 
+/**
+ * @brief Hardware interrupt callback fired when a packet transmission completes.
+ */
 static void mac_tx_callback(void *p_mac, uint32_t queue_no,
                             mss_mac_tx_desc_t *cdesc, void *p_user_data)
 {
@@ -177,6 +210,12 @@ static void mac_tx_callback(void *p_mac, uint32_t queue_no,
     }
 }
 
+/**
+ * @brief Hardware interrupt callback fired when a packet is received.
+ * 
+ * Safely copies the incoming packet into a lock-free queue for processing
+ * outside the ISR context, then re-arms the MAC DMA buffer.
+ */
 static void mac_rx_callback(void *p_mac, uint32_t queue_no, uint8_t *p_rx_packet,
                             uint32_t pckt_length, mss_mac_rx_desc_t *cdesc,
                             void *p_user_data)
@@ -190,16 +229,21 @@ static void mac_rx_callback(void *p_mac, uint32_t queue_no, uint8_t *p_rx_packet
         ctx->rx_count++;
         uint32_t next = (ctx->rx_q_head + 1U) % RX_QUEUE_SIZE;
         if (next != ctx->rx_q_tail) {
+            /* Copy raw packet into ring buffer for main-loop processing */
             memcpy(ctx->rx_raw_queue[ctx->rx_q_head].data, p_rx_packet, pckt_length);
             ctx->rx_raw_queue[ctx->rx_q_head].len = pckt_length;
-            __sync_synchronize();
+            __sync_synchronize(); /* Memory barrier ensuring copy completes before head increments */
             ctx->rx_q_head = next;
         }
     }
 
+    /* Return the buffer to the MAC DMA engine */
     (void)MSS_MAC_receive_pkt((mss_mac_instance_t *)p_mac, 0U, p_rx_packet, 0U, 1);
 }
 
+/**
+ * @brief Translates an lwIP pbuf into a physical hardware transmission.
+ */
 static err_t low_level_output(struct netif *netif, struct pbuf *p)
 {
     net_port_ctx_t *ctx = (net_port_ctx_t *)netif->state;
@@ -212,22 +256,29 @@ static err_t low_level_output(struct netif *netif, struct pbuf *p)
         return ERR_MEM;
     }
 
+    /* Grab the next available 16-byte aligned TX slot */
     uint32_t idx = ctx->tx_ring_head;
     ctx->tx_ring_head = (ctx->tx_ring_head + 1U) % TX_RING_SLOTS;
     uint8_t *tx_buf = ctx->mac_tx_buffer[idx];
 
+    /* Flatten lwIP's chained pbuf into a single contiguous hardware buffer */
     uint32_t len = (uint32_t)pbuf_copy_partial(p, tx_buf, p->tot_len, 0U);
     if (len < ETH_MIN_LEN) {
+        /* Pad frames under 60 bytes (Ethernet requirement) */
         memset(&tx_buf[len], 0, ETH_MIN_LEN - len);
         len = ETH_MIN_LEN;
     }
 
+    /* Briefly mask interrupts to kick the MAC hardware */
     PLIC_DisableIRQ(ctx->hw->irqn);
     uint8_t st = MSS_MAC_send_pkt(mac, 0U, tx_buf, len, (void *)1);
     PLIC_EnableIRQ(ctx->hw->irqn);
     return (st == MSS_MAC_SUCCESS) ? ERR_OK : ERR_MEM;
 }
 
+/**
+ * @brief lwIP netif registration callback initializing MAC address and capabilities.
+ */
 static err_t netif_init_cb(struct netif *netif)
 {
     net_port_ctx_t *ctx = (net_port_ctx_t *)netif->state;
@@ -243,6 +294,9 @@ static err_t netif_init_cb(struct netif *netif)
     return ERR_OK;
 }
 
+/**
+ * @brief Applies fallback static IP addressing if DHCP fails.
+ */
 static void apply_static_ip(net_port_ctx_t *ctx)
 {
     ip4_addr_t ip, mask, gw;
@@ -254,6 +308,9 @@ static void apply_static_ip(net_port_ctx_t *ctx)
     netif_set_addr(&ctx->netif, &ip, &mask, &gw);
 }
 
+/**
+ * @brief Prints current interface telemetry to UART.
+ */
 static void print_single_port_status(net_port_ctx_t *ctx)
 {
     char line[256];
@@ -287,6 +344,9 @@ static void print_single_port_status(net_port_ctx_t *ctx)
     net_log(line);
 }
 
+/**
+ * @brief Iterates over all ports to print link status.
+ */
 void net_port_print_status(void)
 {
     for (uint32_t i = 0U; i < NET_PORT_COUNT; ++i) {
@@ -294,6 +354,9 @@ void net_port_print_status(void)
     }
 }
 
+/**
+ * @brief Boot initialization mapping hardware configs to lwIP netifs.
+ */
 void net_port_init(void)
 {
     char line[192];
@@ -355,7 +418,6 @@ void net_port_init(void)
 
         PLIC_EnableIRQ(hw->irqn);
 
-        
         mss_mac_speed_t speed = MSS_MAC_1000MBPS;
         uint8_t fullduplex = 1U;
         ctx->last_link_up = MSS_MAC_get_link_status(mac, &speed, &fullduplex);
@@ -364,7 +426,6 @@ void net_port_init(void)
         } else {
             netif_set_link_down(&ctx->netif);
         }
-
 
 #if LWIP_DHCP
         ctx->dhcp_done  = 0U;
@@ -383,12 +444,20 @@ void net_port_init(void)
     net_port_print_status();
 }
 
+/**
+ * @brief Master cyclic network poll function.
+ * 
+ * Called continuously from the main application loop. It services lwIP timers, 
+ * unloads raw packets from the ISR lock-free queue into lwIP, tracks physical
+ * PHY link state changes, and enforces DHCP fallbacks.
+ */
 void net_port_poll(void)
 {
     char line[128];
     mss_mac_speed_t speed = MSS_MAC_1000MBPS;
     uint8_t fullduplex = 1U;
 
+    /* Advance lwIP state machines (TCP timeouts, DHCP timers, etc.) */
     sys_check_timeouts();
 
     for (uint32_t i = 0U; i < NET_PORT_COUNT; ++i) {
@@ -400,6 +469,7 @@ void net_port_poll(void)
             uint32_t len  = ctx->rx_raw_queue[tail].len;
             const uint8_t *data = ctx->rx_raw_queue[tail].data;
 
+            /* Safely allocate and hand off packet to lwIP outside interrupt context */
             struct pbuf *p = pbuf_alloc(PBUF_RAW, (u16_t)len, PBUF_POOL);
             if (p != NULL) {
                 pbuf_take(p, data, (u16_t)len);
@@ -412,6 +482,7 @@ void net_port_poll(void)
             ctx->rx_q_tail = (tail + 1U) % RX_QUEUE_SIZE;
         }
 
+        /* Check for PHY unplug/replug events */
         uint8_t link_up = MSS_MAC_get_link_status(ctx->hw->mac_dev, &speed, &fullduplex);
         if (link_up != ctx->last_link_up) {
             ctx->last_link_up = link_up;
@@ -424,6 +495,7 @@ void net_port_poll(void)
                          speed_to_str(speed), fullduplex ? "Full-Duplex" : "Half-Duplex");
                 net_log(line);
 #if LWIP_DHCP
+                /* Restart DHCP transaction on hot-plug */
                 dhcp_stop(&ctx->netif);
                 netif_set_addr(&ctx->netif, IP4_ADDR_ANY4, IP4_ADDR_ANY4, IP4_ADDR_ANY4);
                 dhcp_start(&ctx->netif);
@@ -440,6 +512,7 @@ void net_port_poll(void)
         }
 
 #if LWIP_DHCP
+        /* Evaluate DHCP lease status if link is stable */
         if ((ctx->last_link_up != 0U) && (ctx->dhcp_done == 0U)) {
             if (dhcp_supplied_address(&ctx->netif)) {
                 ctx->dhcp_done = 1U;
@@ -448,6 +521,7 @@ void net_port_poll(void)
                 net_log(line);
                 print_single_port_status(ctx);
             } else if ((now_ms() - ctx->link_up_ms) >= DHCP_FALLBACK_MS) {
+                /* DHCP server didn't respond; apply static IP to allow point-to-point connections */
                 ctx->dhcp_done = 1U;
                 dhcp_stop(&ctx->netif);
                 apply_static_ip(ctx);

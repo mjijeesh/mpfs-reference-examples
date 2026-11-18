@@ -27,11 +27,22 @@ static uint32_t        g_running_crc = 0xFFFFFFFFUL;
 static char            g_active_name[64];
 static mmc_file_meta_t g_cached_meta;
 
+/**
+ * @brief Helper function to log strings out the main application UART.
+ */
 static void mmc_log(const char *s)
 {
     MSS_UART_polled_tx_string(APP_UART, (const uint8_t *)s);
 }
 
+/**
+ * @brief Computes a running IEEE 802.3 CRC32 checksum.
+ * 
+ * @param crc The previous CRC32 value (seed with 0xFFFFFFFFUL on first call).
+ * @param buf Pointer to the byte array to process.
+ * @param len Number of bytes to process.
+ * @return uint32_t The updated CRC32 checksum.
+ */
 static uint32_t crc32_update(uint32_t crc, const uint8_t *buf, size_t len)
 {
     for (size_t i = 0U; i < len; ++i) {
@@ -43,17 +54,36 @@ static uint32_t crc32_update(uint32_t crc, const uint8_t *buf, size_t len)
     return crc;
 }
 
+/**
+ * @brief Hard-resets the eMMC/SD host controller.
+ * 
+ * This pulses the SOFT_RESET_CR_MMC_MASK to clear any dirty state left by 
+ * prior boot stages (like HSS) or failed initialization attempts, giving the 
+ * internal clock dividers time to stabilize.
+ */
 static void mmc_reset_block(void)
 {
     SYSREG->SUBBLK_CLOCK_CR |= (uint32_t)SUBBLK_CLOCK_CR_MMC_MASK;
     SYSREG->SOFT_RESET_CR   |= (uint32_t)SOFT_RESET_CR_MMC_MASK;
     SYSREG->SOFT_RESET_CR   &= ~(uint32_t)SOFT_RESET_CR_MMC_MASK;
 
+    /* Spin delay to allow hardware clock domain synchronization */
     for (volatile uint32_t d = 0U; d < 250000U; ++d) {
         __asm__ volatile ("nop");
     }
 }
 
+/**
+ * @brief Main hardware initialization sequence for the storage subsystem.
+ * 
+ * Implements a fallback chain:
+ * 1. Tries eMMC at 200 MHz (HS200)
+ * 2. Tries eMMC at 50 MHz (SDR)
+ * 3. Tries SD Card at 50 MHz (High Speed)
+ * 4. Tries SD Card at 50 MHz (Default Speed)
+ * 
+ * @return true if media was successfully initialized and identified.
+ */
 bool mmc_storage_init(void)
 {
     char msg[192];
@@ -126,6 +156,7 @@ bool mmc_storage_init(void)
         return true;
     }
 
+    /* Total failure to initialize any media */
     g_mmc_ready = false;
     snprintf(msg, sizeof(msg),
              "[MMC] Init failed (status=%d, xml=%d, sw=%d, IOMUX6=0x%08x)\r\n",
@@ -133,14 +164,19 @@ bool mmc_storage_init(void)
              (unsigned int)SYSREG->IOMUX6_CR);
     mmc_log(msg);
     return false;
-    return false;
 }
 
+/**
+ * @brief Returns the readiness state of the block storage.
+ */
 bool mmc_storage_is_ready(void)
 {
     return g_mmc_ready;
 }
 
+/**
+ * @brief Reads the metadata sector and prints file attributes to UART.
+ */
 void mmc_storage_print_info(void)
 {
     char msg[192];
@@ -171,6 +207,9 @@ void mmc_storage_print_info(void)
     mmc_log(msg);
 }
 
+/**
+ * @brief Executes a non-destructive hardware sector write and read-back test.
+ */
 void mmc_storage_run_selftest(void)
 {
     char msg[160];
@@ -204,6 +243,15 @@ void mmc_storage_run_selftest(void)
     mmc_log(msg);
 }
 
+/**
+ * @brief Prepares the storage layer for an incoming file upload stream.
+ * 
+ * Resets internal byte counters, points the sector write pointer back to the 
+ * start of the data partition, and seeds the CRC calculation.
+ * 
+ * @param filename Name of the file being written.
+ * @return true if storage is ready, false otherwise.
+ */
 bool mmc_file_open_write(const char *filename)
 {
     if (!g_mmc_ready || (filename == NULL)) {
@@ -218,6 +266,17 @@ bool mmc_file_open_write(const char *filename)
     return true;
 }
 
+/**
+ * @brief Streams raw bytes into the eMMC/SD data partition.
+ * 
+ * Accumulates arbitrarily sized byte arrays (e.g. from network packets) into 
+ * a 512-byte staging buffer. Whenever the buffer fills, it writes the sector 
+ * to flash and advances the sector pointer.
+ * 
+ * @param data Pointer to the payload bytes.
+ * @param len Number of bytes in this chunk.
+ * @return int Number of bytes successfully buffered/written, or -1 on error.
+ */
 int mmc_file_write_chunk(const uint8_t *data, uint16_t len)
 {
     if (!g_mmc_ready || ((g_total_written + len) > MMC_MAX_FILE_BYTES)) {
@@ -247,6 +306,12 @@ int mmc_file_write_chunk(const uint8_t *data, uint16_t len)
     return (int)len;
 }
 
+/**
+ * @brief Finalizes an active file upload.
+ * 
+ * Flushes any remaining partial data in the staging buffer to flash, computes
+ * the final CRC32, and writes the persistent metadata block to sector 20480.
+ */
 void mmc_file_close_write(void)
 {
     char msg[160];
@@ -266,7 +331,6 @@ void mmc_file_close_write(void)
     g_cached_meta.magic     = MMC_FILE_MAGIC;
     g_cached_meta.file_size = g_total_written;
     g_cached_meta.crc32     = ~g_running_crc;
-    //strncpy(g_cached_meta.filename, g_active_name, sizeof(g_cached_meta.filename) - 1U);
     memcpy(g_cached_meta.filename, g_active_name, sizeof(g_cached_meta.filename) - 1U);
 
     (void)MSS_MMC_single_block_write((uint32_t *)&g_cached_meta, MMC_META_SECTOR);
@@ -279,6 +343,16 @@ void mmc_file_close_write(void)
     mmc_log(msg);
 }
 
+/**
+ * @brief Prepares to stream a file out of flash storage.
+ * 
+ * Validates the magic signature on the metadata sector and checks if the 
+ * requested filename matches the one on disk.
+ * 
+ * @param filename Name of the file requested by the network client.
+ * @param out_size Pointer to return the total byte size of the file.
+ * @return true if file exists and is ready to read, false otherwise.
+ */
 bool mmc_file_open_read(const char *filename, uint32_t *out_size)
 {
     if (!g_mmc_ready || (filename == NULL) || (out_size == NULL)) {
@@ -299,6 +373,18 @@ bool mmc_file_open_read(const char *filename, uint32_t *out_size)
     return true;
 }
 
+/**
+ * @brief Reads an arbitrary slice of bytes from a stored file.
+ * 
+ * Computes the correct flash sector and sector-offset for the requested 
+ * logical byte offset, reads the sector(s), and copies the exact requested 
+ * slice into the provided buffer.
+ * 
+ * @param buf Output buffer to hold the requested bytes.
+ * @param max_len Maximum number of bytes requested.
+ * @param offset Logical byte offset inside the file.
+ * @return int Number of bytes successfully read.
+ */
 int mmc_file_read_chunk(uint8_t *buf, uint32_t max_len, uint32_t offset)
 {
     if (!g_mmc_ready || (offset >= g_cached_meta.file_size)) {
