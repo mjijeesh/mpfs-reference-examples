@@ -16,6 +16,11 @@ bool     mmc_storage_is_ready(void);
 void     mmc_storage_print_info(void);
 void     mmc_storage_run_selftest(void);
 
+
+
+bool     mmc_storage_init_media(bool use_emmc);
+
+
 /* Streaming TFTP file write/read APIs */
 bool     mmc_file_open_write(const char *filename);
 int      mmc_file_write_chunk(const uint8_t *data, uint16_t len);

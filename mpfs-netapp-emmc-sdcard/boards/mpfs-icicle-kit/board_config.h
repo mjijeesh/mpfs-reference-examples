@@ -19,7 +19,7 @@ extern uint8_t PLIC_mac1_int_IRQHandler(void);
 
 /* Storage Media Selection: 1 = eMMC (8-bit, 1.8V), 0 = SD Card (4-bit, 1.8V) */
 #ifndef APP_MMC_USE_EMMC
-#define APP_MMC_USE_EMMC            1
+#define APP_MMC_USE_EMMC            0
 #endif
 #define APP_MMC_DEMUX_ADDR          0x4FFFFF00UL
 
