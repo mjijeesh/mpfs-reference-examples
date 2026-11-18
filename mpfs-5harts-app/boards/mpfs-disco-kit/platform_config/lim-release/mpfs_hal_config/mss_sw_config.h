@@ -64,7 +64,7 @@
 
 // Restrict HAL startup synchronization strictly to Hart 0 (E51)
 #ifndef MPFS_HAL_FIRST_HART
-#define MPFS_HAL_FIRST_HART    1
+#define MPFS_HAL_FIRST_HART    0
 #endif
 
 #ifndef MPFS_HAL_LAST_HART

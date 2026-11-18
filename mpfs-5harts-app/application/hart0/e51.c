@@ -386,8 +386,14 @@ void e51(void)
 
     while (1) {
         record_hart_location(t0);
+        
         t0->heartbeat++;
         t0->iterations++;
+
+        /* Keep HSS-armed WDOG1..WDOG4 alive from E51 (Hart 0) */
+        for (uint32_t wd = 1U; wd <= 4U; wd++) {
+            refresh_hw_watchdog(wd);
+        }
 
         uint8_t rx_byte = 0;
         if (MSS_UART_get_rx(CONSOLE_UART, &rx_byte, 1U) > 0U) {

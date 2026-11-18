@@ -22,7 +22,8 @@ void u54_3(void)
 
     while (1) {
 
-        record_hart_location(t);
+        refresh_hw_watchdog(3U);
+
         if (t->ctrl_flags & HART_CTRL_PAUSE) {
             t->state = HART_STATE_PAUSED;
             t->heartbeat++;
@@ -35,6 +36,7 @@ void u54_3(void)
 
         uint64_t t0 = read_cycles();
         for (uint32_t p = 0; p < passes; p++) {
+            record_hart_location(t);
             uint32_t pattern = 0x55AA55AAUL ^ (uint32_t)(t->iterations + p);
 
             for (size_t i = 0; i < STRESS_BUF_WORDS; i++) {
@@ -58,6 +60,7 @@ void u54_3(void)
         uint64_t dt = read_cycles() - t0;
 
         if (dt > 0) {
+            record_hart_location(t);
             /* Read + Write bytes = 2 * passes * 16 KB */
             uint64_t total_bytes = (uint64_t)passes * STRESS_BUF_WORDS * sizeof(uint32_t) * 2ULL;
             /* MB/s * 100 */

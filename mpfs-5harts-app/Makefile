@@ -2,8 +2,9 @@
 # PolarFire SoC Bare-Metal Network Application Makefile
 # ==============================================================================
 
-TARGET ?= mpfs-net-app
-BOARD  ?= $(if $(board),$(board),mpfs-disco-kit)
+TARGET    ?= mpfs-5harts-app
+BOARD     ?= $(if $(board),$(board),mpfs-disco-kit)
+NUM_HARTS ?= 5
 
 # Infer MEM_TARGET automatically from convenience goals when not set explicitly
 ifeq ($(origin MEM_TARGET), undefined)
@@ -121,6 +122,7 @@ APP_SRCS_C := $(BOARD_SRCS_C) \
 
 DRIVER_SRCS_C := platform/drivers/mss/mss_mmuart/mss_uart.c \
                  platform/drivers/mss/mss_ethernet_mac/mss_ethernet_mac.c \
+				 platform/drivers/mss/mss_watchdog/mss_watchdog.c \
                  $(BOARD_PHY_DRIVER)
 
 HAL_SRCS_C := platform/mpfs_hal/startup_gcc/newlib_stubs.c \
@@ -208,11 +210,14 @@ else
 	@$(MAKE) -C $(HSS_PAYLOAD_GEN_DIR)
 endif
 
+PAYLOAD_SET_PREFIX := $(if $(filter 5,$(NUM_HARTS)),PolarFire-SoC-HSS::5CORES,PolarFire-SoC-HSS)
+
 $(BUILD_DIR)/payload.yaml: $(ELF_FILE)
 	@mkdir -p $(dir $@)
 	@ENTRY=$$($(READELF) -h $< | awk '/Entry point address:/ {print $$4}'); \
-	printf "set-name: 'PolarFire-SoC-HSS::$(TARGET)'\n\nhart-entry-points: {\n  u54_1: '%s',\n  u54_2: '%s',\n  u54_3: '%s',\n  u54_4: '%s'\n}\n\npayloads:\n  %s:\n    owner-hart: u54_1\n    secondary-hart: u54_2\n    secondary-hart: u54_3\n    secondary-hart: u54_4\n    priv-mode: prv_m\n    skip-opensbi: true\n    payload-name: \"%s\"\n" \
+	printf "set-name: '$(PAYLOAD_SET_PREFIX)::$(TARGET)'\n\nhart-entry-points: {\n  u54_1: '%s',\n  u54_2: '%s',\n  u54_3: '%s',\n  u54_4: '%s'\n}\n\npayloads:\n  %s:\n    owner-hart: u54_1\n    secondary-hart: u54_2\n    secondary-hart: u54_3\n    secondary-hart: u54_4\n    priv-mode: prv_m\n    skip-opensbi: true\n    payload-name: \"%s\"\n" \
 	"$$ENTRY" "$$ENTRY" "$$ENTRY" "$$ENTRY" "$<" "$(TARGET)" > $@
+
 
 $(PAYLOAD_FILE): $(ELF_FILE) $(BUILD_DIR)/payload.yaml $(HSS_PAYLOAD_GEN)
 	@echo " [HSS] Generating boot payload: $@"

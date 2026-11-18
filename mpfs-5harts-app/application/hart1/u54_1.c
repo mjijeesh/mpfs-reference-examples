@@ -34,6 +34,8 @@ void u54_1(void)
     while (1) {
 
         record_hart_location(t);
+        refresh_hw_watchdog(1U);
+
         if (t->ctrl_flags & HART_CTRL_PAUSE) {
             t->state = HART_STATE_PAUSED;
             t->heartbeat++;

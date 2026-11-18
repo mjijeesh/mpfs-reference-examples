@@ -1,3 +1,109 @@
+# PolarFire SoC: 5-Core Bare-Metal Application Guide
+
+This guide covers the necessary configurations for a bare-metal application to successfully boot and run on all 5 cores (including E51) when launched by the modified Hart Software Services (HSS).
+
+## 1. Tag the Payload in `Makefile`
+
+Update your target application's `Makefile` to inject the `5CORES` tag into the payload's `set-name`. The modified HSS looks for this tag to determine if it should relinquish control of the E51 core.
+
+In your `Makefile` (around the `payload.yaml` generation rule):
+```makefile
+NUM_HARTS ?= 5
+PAYLOAD_SET_PREFIX := $(if $(filter 5,$(NUM_HARTS)),PolarFire-SoC-HSS::5CORES,PolarFire-SoC-HSS)
+
+$(BUILD_DIR)/payload.yaml: $(ELF_FILE)
+	@mkdir -p $(dir $@)
+	@ENTRY=$$($(READELF) -h $< | awk '/Entry point address:/ {print $$4}'); \
+	printf "set-name: '$(PAYLOAD_SET_PREFIX)::$(TARGET)'\n\nhart-entry-points: {\n  u54_1: '%s',\n  u54_2: '%s',\n  u54_3: '%s',\n  u54_4: '%s'\n}\n\npayloads:\n  %s:\n    owner-hart: u54_1\n    secondary-hart: u54_2\n    secondary-hart: u54_3\n    secondary-hart: u54_4\n    priv-mode: prv_m\n    skip-opensbi: true\n    payload-name: \"%s\"\n" \
+	"$$ENTRY" "$$ENTRY" "$$ENTRY" "$$ENTRY" "$<" "$(TARGET)" > $@
+```
+
+## 2. Enable E51 in `mpfs_hal` Configuration
+
+By default, the bare-metal HAL expects HSS to keep E51 and therefore parks it in an infinite `WFI` loop. You must explicitly tell the HAL that Hart 0 is participating in the application.
+
+Edit `boards/mpfs-disco-kit/platform_config/ddr-release/mpfs_hal_config/mss_sw_config.h` (and the `lim-release` variant if used):
+```c
+/* Change from 1 to 0 to enable Hart 0 (E51) */
+#ifndef MPFS_HAL_FIRST_HART
+#define MPFS_HAL_FIRST_HART    0
+#endif
+
+#ifndef MPFS_HAL_LAST_HART
+#define MPFS_HAL_LAST_HART     4
+#endif
+
+/* Set to 0 because HSS already loaded the payload into RAM */
+#ifndef MPFS_HAL_CLEAR_MEMORY
+#define MPFS_HAL_CLEAR_MEMORY  0
+#endif
+```
+
+## 3. Safely Reload Hardware Watchdogs
+
+Some Libero FPGA designs enable `WDOG0` in hardware at reset. If left un-refreshed, it will trigger a reset ~33 seconds after boot. The application must refresh any watchdogs that were enabled in hardware.
+
+**A. In `application/hart_shared.h`:**
+Add the following helper functions to safely refresh active watchdogs:
+```c
+static inline uintptr_t wdog_base_addr(uint32_t hart_id)
+{
+    switch (hart_id) {
+        case 0U: return 0x20001000UL; /* WDOG0_LO (E51)   */
+        case 1U: return 0x20101000UL; /* WDOG1_LO (U54_1) */
+        case 2U: return 0x20103000UL; /* WDOG2_LO (U54_2) */
+        case 3U: return 0x20105000UL; /* WDOG3_LO (U54_3) */
+        case 4U: return 0x20107000UL; /* WDOG4_LO (U54_4) */
+        default: return 0UL;
+    }
+}
+
+static inline void refresh_hw_watchdog(uint32_t hart_id)
+{
+    uintptr_t base = wdog_base_addr(hart_id);
+    if (base == 0UL) return;
+
+    uint32_t status = *(volatile uint32_t *)(base + 0x08UL);
+    /* Bit 2 (0x04) = WDOG_ENABLED. Only reload if hardware actually enabled it. */
+    if ((status & 0x06U) == 0x04U) {
+        *(volatile uint32_t *)(base + 0x00UL) = 0xAC15DE42U;
+    }
+}
+```
+
+**B. In `application/hart0/e51.c`:**
+Loop over all watchdogs inside your `while(1)` main loop to keep the system alive:
+```c
+    while (1) {
+        /* Keep all active hardware watchdogs alive from E51 */
+        for (uint32_t wd = 0U; wd < 5U; wd++) {
+            refresh_hw_watchdog(wd);
+        }
+        
+        // ... (rest of your CLI processing loop)
+    }
+```
+
+## 4. Building and Deploying
+
+Build your application for DDR execution:
+```bash
+make BOARD=mpfs-disco-kit clean ddr-release
+```
+
+Upload the generated payload using `mpfs-terminal.py` on the HSS serial port (`MMUART0` / `/dev/ttyUSB1`):
+```bash
+python3 tools/mpfs-terminal.py /dev/ttyUSB1 --kernel build/mpfs-disco-kit/ddr-release/mpfs-5harts-app_payload.bin
+```
+
+## 5. Connecting and Testing
+
+* **HSS Console (`/dev/ttyUSB1`):** Shows the boot process. You will see it intercept the `5CORES` tag and print: `[BOOT] 5-core payload detected; handing over E51 (Hart 0) to 0x80000000...`
+* **Application CLI (`/dev/ttyUSB2`):** Your custom E51 telemetry interface (`e51>`) will become active here. You can run `info`, `loc`, `bench`, and other commands to interact with the 5-core system directly from DDR.
+
+
+
+
 # PolarFire SoC Bare-Metal eMMC & SD Card Bring-Up Guide
 
 This document captures the architecture, critical hardware learnings, and step-by-step file modifications required to bring up the Cadence SD/eMMC host controller on the Microchip PolarFire SoC bare-metal environment, completely independent of the Hart Software Services (HSS) bootloader.

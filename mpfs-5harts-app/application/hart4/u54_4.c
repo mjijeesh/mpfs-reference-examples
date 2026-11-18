@@ -28,6 +28,7 @@ void u54_4(void)
     while (1) {
 
         record_hart_location(t);
+        refresh_hw_watchdog(4U);
         uint64_t cur_cycle = read_cycles();
 
         if ((cur_cycle - last_cycle) >= CPU_FREQ_HZ) {

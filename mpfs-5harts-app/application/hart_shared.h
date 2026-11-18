@@ -100,4 +100,17 @@ static inline void shared_log_event(uint32_t hart_id, uint32_t code, const char 
     __sync_lock_release(&g_hart_shared.log_lock);
 }
 
+#include "drivers/mss/mss_watchdog/mss_watchdog.h"
+
+static inline void refresh_hw_watchdog(uint32_t hart_id)
+{
+    /* HSS arms WDOG1..WDOG4 for U54_1..U54_4 (leave WDOG0 untouched unless enabled in HSS) */
+    if ((hart_id >= 1U) && (hart_id <= 4U)) {
+        mss_watchdog_num_t wd = (mss_watchdog_num_t)hart_id; /* MSS_WDOG1_LO .. MSS_WDOG4_LO */
+        if (!MSS_WD_forbidden_status(wd)) {
+            MSS_WD_reload(wd);
+        }
+    }
+}
+
 #endif /* HART_SHARED_H */

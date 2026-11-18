@@ -6,6 +6,7 @@
 
 static uint32_t compute_crc32(const uint8_t *data, size_t len)
 {
+    
     uint32_t crc = 0xFFFFFFFFU;
     for (size_t i = 0; i < len; i++) {
         crc ^= data[i];
@@ -37,6 +38,8 @@ void u54_2(void)
     while (1) {
 
         record_hart_location(t);
+        refresh_hw_watchdog(2U);
+
         if (t->ctrl_flags & HART_CTRL_PAUSE) {
             t->state = HART_STATE_PAUSED;
             t->heartbeat++;
