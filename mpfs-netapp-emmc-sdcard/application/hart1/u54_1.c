@@ -166,4 +166,16 @@ void u54_1(void)
     snprintf(msg, sizeof(msg),
              "[INIT 4/4] Starting HTTP (TCP/80) & TFTP-to-MMC (UDP/69) @ T+%u ms...\r\n",
              (unsigned int)uptime_ms());
-    uart_puts(
+    uart_puts(msg);
+
+    web_server_init();
+    tftp_server_app_init();
+
+    uart_puts("[APP] Ready. Press 'w' for local eMMC/SD test or send a file via TFTP.\r\n");
+
+    /* Cooperative bare-metal superloop: service network frames/timers and UART CLI */
+    while (1) {
+        net_port_poll();
+        poll_uart_cli();
+    }
+}
