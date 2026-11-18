@@ -28,4 +28,9 @@ NET_STACK_SRCS_C := middleware/net_stack/net_port.c \
                     middleware/net_stack/web_server.c \
                     middleware/net_stack/tftp_server_app.c
 
+
+# emmc support for netapp
+NET_STACK_SRCS_C += middleware/net_stack/mmc_storage.c
+                    
+
 MIDDLEWARE_SRCS_C := $(LWIP_SRCS_C) $(NET_STACK_SRCS_C)

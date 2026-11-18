@@ -8,6 +8,8 @@ void board_periph_init(void)
     (void)mss_config_clk_rst(MSS_PERIPH_MMUART1, (uint8_t)MPFS_HAL_FIRST_HART, PERIPHERAL_ON);
     (void)mss_config_clk_rst(MSS_PERIPH_MAC0,    (uint8_t)MPFS_HAL_FIRST_HART, PERIPHERAL_ON);
     (void)mss_config_clk_rst(MSS_PERIPH_MAC1,    (uint8_t)MPFS_HAL_FIRST_HART, PERIPHERAL_ON);
+    (void)mss_config_clk_rst(MSS_PERIPH_EMMC,    (uint8_t)MPFS_HAL_FIRST_HART, PERIPHERAL_ON);
+    (void)mss_config_clk_rst(MSS_PERIPH_GPIO2,   (uint8_t)MPFS_HAL_FIRST_HART, PERIPHERAL_ON);
 
     PLIC_init();
     __enable_irq();

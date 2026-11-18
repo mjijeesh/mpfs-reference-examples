@@ -26,3 +26,11 @@ BOARD_CFLAGS     := -DBOARD_MPFS_ICICLE_KIT \
                     -DTARGET_G5_SOC \
                     -DMSS_MAC_SIMPLE_TX_QUEUE \
                     -DGEM1_MSS_MDIO
+
+
+# Enabling support for emmc driver for the board
+# CoreGPIO is needed to do the mux selection of sdcard/emmc and also to control the reset pin of the emmc device
+BOARD_CFLAGS     += -DMSS_MMC_ENABLE
+BOARD_SRCS_C += platform/drivers/mss/mss_mmc/mss_mmc.c \
+                platform/drivers/mss/mss_mmc/mss_mmc_if.c \
+                platform/drivers/mss/mss_gpio/mss_gpio.c

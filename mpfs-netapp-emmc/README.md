@@ -1,594 +1,421 @@
+# PolarFire SoC Bare-Metal eMMC & SD Card Bring-Up Guide
 
-# Guide to Bare-Metal Ethernet on PolarFire SoC - DualMAC
+This document captures the architecture, critical hardware learnings, and step-by-step file modifications required to bring up the Cadence SD/eMMC host controller on the Microchip PolarFire SoC bare-metal environment, completely independent of the Hart Software Services (HSS) bootloader.
 
-Welcome! This guide will walk you through building, configuring, and running a dual-port bare-metal Ethernet application on the **Microchip PolarFire SoC Icicle Kit**. 
+It also details how to bridge this block storage driver to an lwIP TFTP server for direct PC-to-eMMC file transfers.
 
-If you are new to Linux or PolarFire SoC, this document is designed for you. It explains *what* we are doing, *why* we are doing it, and provides the exact terminal commands you need.
+## 1. Key Learnings & Hardware Quirks
 
----
+During the bring-up process, we uncovered several critical requirements that must be met to avoid the dreaded `status=1` (`MSS_MMC_NOT_INITIALISED`) error. 
 
-## 1. Concepts & Terminology
+### A. The Hardware Reset Pulse is Mandatory
+Simply enabling the peripheral clock via `mss_config_clk_rst(MSS_PERIPH_EMMC, ..., PERIPHERAL_ON)` is insufficient, especially when debugging via JTAG (`lim-debug`) or taking over from a previous boot stage. The Cadence host controller and the physical eMMC chip must be forcefully reset to a clean state before `MSS_MMC_init()` is called. 
+* **Fix:** Assert `SOFT_RESET_CR_MMC_MASK`, de-assert it, and wait for ~250,000 clock cycles (`NOP` loops) before attempting initialization.
 
-Before diving into code, let's clarify a few terms:
-* **Bare-Metal:** Running code directly on the processor without an Operating System (like Linux or FreeRTOS). We manage the hardware directly.
-* **lwIP (Lightweight IP):** A tiny, open-source TCP/IP networking stack designed for embedded systems.
-* **HSS (Hart Software Services):** The bootloader for PolarFire SoC. It runs on the monitor core (E51), sets up the DDR memory, and loads our bare-metal application into the application cores (U54).
-* **MAC (Media Access Control) & PHY (Physical Layer):** The MAC (inside the PolarFire chip, named GEM0 and GEM1) handles digital Ethernet packets. The PHY (an external chip, the VSC8662) translates these packets into electrical signals for the RJ45 cable.
-* **MDIO (Management Data Input/Output):** A simple two-wire bus used by the MAC to read/write configuration settings to the PHY.
+### B. MSSIO Pin Muxing (`switch_mssio_config`)
+The eMMC and SD card pins (CLK, CMD, DAT0-7) are located on **Bank 4 MSSIO**. On boards like the Icicle Kit, you must dynamically configure the electrical pads (1.8V vs 3.3V) and route the signals to the controller.
+* **Fix:** You must call `switch_mssio_config(EMMC_MSSIO_CONFIGURATION)` from `mpfs_hal/common/nwc/mss_io_config.h` before initialization. This relies on the Libero XML-generated `hw_mssio_mux.h` being correct for your specific board.
 
----
-
-## 2. Hardware Architecture (The "Shared MDIO" Quirk)
-
-The Icicle Kit has two Ethernet ports (Port J1 and Port J2), driven by a single dual-port PHY chip (Microchip VSC8662). 
-
-Here is the hardware quirk you must understand: **Both ports share a single MDIO management bus, and that bus is physically wired only to GEM1 (Port J2).**
-
-| Feature | Port J2 (GEM1) | Port J1 (GEM0) |
-| :--- | :--- | :--- |
-| **Data Connection** | Native to GEM1 | Native to GEM0 |
-| **MDIO Control** | Native to GEM1 | **Routed through GEM1** |
-| **PHY Address** | `9U` (Channel 1) | `8U` (Channel 0) |
-
-**What this means for software:** We *must* turn on and configure GEM1 (Port J2) first. If we don't, GEM0 (Port J1) cannot talk to the PHY, and its link will stay down.
+### C. Speed Modes and Voltages
+Microchip's driver uses distinct enums for SD vs. eMMC, and crossing them causes initialization failures during the PHY delay calibration:
+* **eMMC (8-bit, 1.8V):** Use `MSS_MMC_MODE_HS200` (200 MHz) or `MSS_MMC_MODE_HSD` (High-Speed 50 MHz). *Never use `MSS_MMC_MODE_SDR` for eMMC.*
+* **SD Card (4-bit, 1.8V/3.3V):** Use `MSS_SDCARD_MODE_HIGH_SPEED` or `MSS_MMC_MODE_SDR` (50 MHz).
+* **Fallback:** Always implement a fallback to `MSS_MMC_CLOCK_25MHZ` with `MSS_MMC_MODE_LEGACY` if the high-speed initialization fails.
 
 ---
 
-## 3. Ethernet PHY & MAC Bring-Up Settings
+## 2. Required File Modifications
 
-To make the hardware work, we configure three specific areas in the code.
+To replicate this implementation on a new board or project, the following files must be updated.
 
-### A. Clocks and Resets (`boards/mpfs-icicle-kit/board_init.c`)
-Before we can use the Ethernet ports, we must turn on their power/clocks and bring them out of reset. We do this simultaneously for both MACs:
-```c
-mss_config_clk_rst(MSS_PERIPH_MAC0, (uint8_t)MPFS_HAL_FIRST_HART, PERIPHERAL_ON);
-mss_config_clk_rst(MSS_PERIPH_MAC1, (uint8_t)MPFS_HAL_FIRST_HART, PERIPHERAL_ON);
-```
-
-### B. Board Configuration (`boards/mpfs-icicle-kit/board_config.h`)
-We define a list called `NET_PORT_LIST`. We place GEM1 (Port J2) first in this list so it gets initialized first. We also tell GEM0 to use GEM1's MDIO controller:
-```c
-// Inside the configuration for GEM0 (Port J1):
-.mac_dev  = &g_mac0,  // Use GEM0 for data
-.mdio_mac = &g_mac1,  // Borrow GEM1 for PHY configuration!
-.phy_addr = 8U,       // Channel 0
-```
-
-### C. Ring Buffers (`mss_ethernet_mac_sw_cfg.h`)
-The Ethernet hardware uses DMA (Direct Memory Access) to move packets into memory without bothering the CPU. DMA requires "Ring Buffers". 
-*Note: The PolarFire SoC requires at least 16 descriptors per ring to function correctly. Anything less will cause packets to drop silently!*
-```c
-#define MSS_MAC_RX_RING_SIZE (32U) 
-#define MSS_MAC_TX_RING_SIZE (16U)
-```
-
----
-
-## 4. lwIP Networking Configuration (`lwipopts.h`)
-
-Our application uses lwIP in a `NO_SYS = 1` mode (meaning no RTOS/Operating System threads). 
-
-### A. Memory Sizing
-Because we are booting into external DDR memory (which is huge), we can give lwIP generous memory limits for high-speed transfers:
-* `PBUF_POOL_SIZE = 32`: Pre-allocates 32 packet buffers.
-* `MEMP_NUM_TCP_PCB = 16`: Allows up to 16 simultaneous HTTP web server connections.
-* `MEMP_NUM_UDP_PCB = 8`: Allows multiple TFTP file transfers and DHCP.
-
-### B. Source-Based Routing
-If you plug both J1 and J2 into the same network switch (e.g., your home router), they will both get IP addresses on the same subnet (like `192.168.1.51` and `192.168.1.52`). 
-
-Normally, lwIP sends all outbound replies out of the *first* port it finds. This means if you ping Port J1, the reply might exit out of Port J2, causing networking errors! To fix this, we enable a special hook to route replies out of the exact port that received them:
-```c
-struct netif *net_port_route_src(const struct ip4_addr *src, const struct ip4_addr *dest);
-#define LWIP_HOOK_IP4_ROUTE_SRC(src, dest) net_port_route_src((src), (dest))
-```
-
----
-
-## 5. How the Application Code Works
-
-Because there is no Operating System, the code uses an infinite loop (a "Superloop") to process data.
-
-### `u54_1.c` (The Main Function)
-This is where the application starts. 
-1. Initializes the hardware and UART (Serial Console).
-2. Initializes the network stack (`net_port_init()`).
-3. Starts the HTTP (Web) and TFTP (File Transfer) servers.
-4. Enters an infinite `while(1)` loop, constantly calling `net_port_poll()` to check for new network packets, and `poll_uart_cli()` to check if you pressed a key on your keyboard.
-
-### `net_port.c` (The Network Manager)
-This file connects the Microchip hardware drivers to the lwIP software stack safely.
-* **Interrupts (`mac_rx_callback`):** When a packet arrives, the hardware triggers a hardware interrupt. Our code simply copies the packet into a temporary lock-free software queue (`rx_raw_queue`) and immediately exits. It does **not** process the packet here to keep the system responsive.
-* **Polling (`net_port_poll`):** Inside the safe `while(1)` loop, this function drains the temporary queue and passes the packets up into the lwIP stack (`netif->input()`). It also checks if the Ethernet cable was unplugged and processes DHCP IP assignments.
-
----
-
-## 6. Building the Project
-
-You need a Linux environment with the RISC-V GNU Toolchain (`riscv-none-elf-gcc`) installed.
-
-1. **Open a terminal** and navigate to your project folder:
-   ```bash
-   cd ~/git/mpfs-reference-examples/mpfs-netapp
-   ```
-2. **Make the payload generator executable** (Linux requires explicit permission to run scripts):
-   ```bash
-   chmod +x tools/hss-payload-generator/hss-payload-generator
-   ```
-3. **Build the application** for the external DDR memory target:
-   ```bash
-   make BOARD=mpfs-icicle-kit clean ddr-release
-   ```
-   *Expected Output: The compiler will run and eventually print a table showing memory usage, creating a file named `mpfs-net-app_payload.bin`.*
-
----
-
-## 7. Loading the Application onto the Board
-
-You can load your compiled binary onto the board using the pre-installed HSS bootloader in two ways:
-
-### Option A: Loading via HSS SerialBoot (Over USB) - *Best for Beginners*
-This sends the file over the USB cable. 
-1. Ensure the Icicle Kit's Micro-USB is connected to your PC.
-2. In a Linux terminal, run the provided Python script to trigger the upload to the HSS serial port (usually `/dev/ttyUSB0`):
-   ```bash
-   python3 tools/mpfs-terminal.py /dev/ttyUSB0 \
-       --kernel build/mpfs-icicle-kit/ddr-release/mpfs-net-app_payload.bin \
-       --serial-boot
-   ```
-   *The script will say "Uploading...", write the file into the board's RAM, and command the board to boot.*
-
-### Option B: Loading via HSS Netboot (Over Network)
-This is much faster but requires a TFTP server on your Linux PC.
-1. Copy `mpfs-net-app_payload.bin` to your PC's TFTP folder and rename it to `boot.bin`.
-2. Open a standard serial terminal to the HSS console:
-   ```bash
-   python3 -m serial.tools.miniterm /dev/ttyUSB0 115200
-   ```
-3. Press a key on your keyboard to stop the default boot process and enter the `TinyCLI` prompt.
-4. Tell the board to download the file from your PC's IP address (e.g., `192.168.20.94`):
-   ```text
-   >> netboot 192.168.20.94 boot.bin
-   ```
-
----
-
-## 8. Expected Outputs & Testing
-
-To see the application output, open a second terminal window to the **Application Console** (`MMUART1`, usually `/dev/ttyUSB1` at 115200 baud):
-
-```bash
-python3 -m serial.tools.miniterm /dev/ttyUSB1 115200
-```
-
-**Expected Boot Log:**
-```text
-========================================================
- PolarFire SoC Icicle Kit - Bare-Metal lwIP NetApp
-========================================================
-[INIT 1/7] SYSREG CLOCK_CR=0xffffffff  SOFT_RESET_CR=0x00000000
-[MAC e0] GEM1 TBI/SGMII + VSC8662 (J2) ready
-[DHCP e0] Started DHCP discovery...
-[MAC e1] GEM0 TBI/SGMII + VSC8662 (J1) ready
-[DHCP e1] Started DHCP discovery...
-[APP] Initialization complete. Entering main poll loop.
-```
-
-**Plug Ethernet cables into J1 and J2.** You will see:
-```text
-[PHY e0] Link UP -> 1000 Mbps Full-Duplex
-[PHY e1] Link UP -> 1000 Mbps Full-Duplex
-[DHCP e0] Lease acquired!
-[NET e0] IP   : 192.168.20.155 | Mask: 255.255.255.0
-[DHCP e1] Lease acquired!
-[NET e1] IP   : 192.168.20.156 | Mask: 255.255.255.0
-```
-
-### Run Tests from your Linux PC:
-
-1. **Ping the Board:** 
-   ```bash
-   ping -c 4 192.168.20.155
-   ```
-   *(Expected: 0% packet loss).*
-
-2. **Test the Web Server:**
-   ```bash
-   curl -i http://192.168.20.155/
-   ```
-   *(Expected: Outputs raw HTML code from the board's embedded web server).*
-
-3. **Test the TFTP Server (File Transfer):**
-   *(Note: The `-m octet` flag is critical to force binary mode).*
-   ```bash
-   tftp -m octet 192.168.20.155 -c put Makefile
-   ```
-   *(Expected: Instantly uploads your local Makefile into the board's RAM).*
-
-**Tip:** At any time, you can press **`s`** in your `miniterm` application console window to print the current packet counters (TX/RX) for both ports!
-
-## Feature Update: L2-LIM Execution Support (`lim-app`)
-
-This update enables the bare-metal lwIP network application (DHCP, ICMP Ping, HTTP Server on TCP/80, and TFTP RAM-Disk Server on UDP/69) to execute directly from on-chip **L2 Loosely Integrated Memory (L2-LIM)** on the **PolarFire SoC Discovery Kit** when booted via Hart Software Services (HSS).
-
----
-
-### 1. L2-LIM Hardware Memory Map & HSS Constraints
-
-On the Discovery Kit hardware design (`LIBERO_SETTING_WAY_ENABLE = 0x0000000BUL`), 12 of the 16 L2 SRAM ways (1.5 MiB) are allocated to L2 Cache, leaving 4 ways (**512 KiB**, `0x0800_0000` – `0x0807_FFFF`) mapped as L2-LIM.
-
-Because HSS executes from eNVM (`0x2022_0000`) and remains resident on **E51** in the background after booting the U54 payload, HSS reserves the lower 256 KiB of L2-LIM for its runtime data, `.bss`, E51 stack, and IPI queues. The `lim-app` target (`-DMEM_TARGET_LIM -DIMAGE_LOADED_BY_BOOTLOADER=1`) therefore links into the upper **256 KiB High-LIM** region:
-
-| Address Range | Size | Owner | Allocation |
-| :--- | :--- | :--- | :--- |
-| `0x0800_0000` – `0x0803_FFFF` | **256 KiB** | **HSS (E51 Runtime)** | HSS `.data`/`.bss`, E51 stack, IPI queues, boot scratchpad |
-| `0x0804_0000` – `0x0807_FFFF` | **256 KiB** | **U54 Application (`lim-app`)** | `.text`, `.rodata`, `.data`, `.bss`, heap, and hart stacks |
-
----
-
-### 2. Memory Footprint Scaling (`ddr` vs. `lim-app`)
-
-To fit the entire application code, Ethernet DMA buffers, lwIP pools, TFTP RAM-disk, heap, and hart stacks inside the **256 KiB** High-LIM budget without altering the high-throughput `ddr` build, memory allocations are conditionally scaled when `-DMEM_TARGET_LIM` is active:
-
-| Component | File | `ddr` Build | `lim-app` Build | L2-LIM Footprint |
-| :--- | :--- | :--- | :--- | :--- |
-| **MAC RX DMA Ring** | `mss_ethernet_mac_sw_cfg.h` | `32U` descriptors | `16U` descriptors (GEM0 DMA min) | — |
-| **MAC TX DMA Ring** | `mss_ethernet_mac_sw_cfg.h` | `1001U` descriptors | `16U` descriptors (GEM0 DMA min) | — |
-| **MAC RX Buffer Pool** | `net_port.c` | `32 × 10,240 B` (320 KiB) | `16 × 1,536 B` (`RX_SLOT_SIZE`) | **24,576 B** |
-| **MAC TX Buffer Pool** | `net_port.c` | `8 × 1,536 B` (12 KiB) | `4 × 1,536 B` (`TX_RING_SLOTS`) | **6,144 B** |
-| **ISR-to-Poll RX Queue** | `net_port.c` | `64` frames (~95 KiB) | `8` frames (`RX_QUEUE_SIZE`) | **12,192 B** |
-| **lwIP Dynamic Heap** | `lwipopts.h` | `128 KiB` | `24 KiB` (`MEM_SIZE`) | **~24.0 KiB** |
-| **lwIP PBUF Pool** | `lwipopts.h` | `32 × 1,536 B` (48 KiB) | `12 × 1,536 B` (`PBUF_POOL_SIZE`) | **~18.3 KiB** |
-| **TFTP RAM-Disk** | `tftp_server_app.c` | `1 MiB` (`1024 KiB`) | `16 KiB` (`TFTP_RAMDISK_BYTES`) | **16,384 B** |
-| **Heap & Hart Stacks** | `mpfs-lim-app.ld` | `52 KiB` total | `U54_1=8k`, `E51/U54_2..4=1k`, `Heap=4k`, `Common=2k` | **18,432 B** |
-
----
-
-### 3. File-by-File Configuration Changes
-
-#### A. Linker Script (`boards/mpfs-disco-kit/platform_config/lim-release/linker/mpfs-lim-app.ld`)
-Keep `l2lim` anchored at `ORIGIN = 0x08040000, LENGTH = 256k` and reclaim **34 KiB** from idle harts (`E51` is managed by HSS; `u54_2`–`u54_4` execute an idle `wfi` loop) while preserving an `8k` stack for `u54_1`:
-
-```ld
-MEMORY
-{
-    /* High LIM target: 256KB offset within 512KB LIM region (HSS uses 0x08000000-0x0803FFFF) */
-    l2lim (rwx)                : ORIGIN = 0x08040000, LENGTH = 256k
-    ddr_cached_32bit (rwx)     : ORIGIN = 0x80000000, LENGTH = 128M
-    ddr_non_cached_32bit (rwx) : ORIGIN = 0xC0000000, LENGTH = 128M
-    ddr_wcb_32bit (rwx)        : ORIGIN = 0xD0000000, LENGTH = 256M
-}
-
-HEAP_SIZE               = 4k;
-SIZE_OF_COMMON_HART_MEM = 2k;
-
-STACK_SIZE_E51_APPLICATION   = 1k;
-STACK_SIZE_U54_1_APPLICATION = 8k;
-STACK_SIZE_U54_2_APPLICATION = 1k;
-STACK_SIZE_U54_3_APPLICATION = 1k;
-STACK_SIZE_U54_4_APPLICATION = 1k;
-
-```
-
-#### **B. Ethernet MAC Ring Configuration (`mss_ethernet_mac_sw_cfg.h`)**
-
-GEM0's DMA descriptor cache requires at least `16U` descriptors per ring. Scale the RX/TX rings conditionally for `MEM_TARGET_LIM` in `platform/drivers/mss/mss_ethernet_mac/mss_ethernet_mac_sw_cfg.h` and remove any duplicate `(4U)` macro definitions:
-
-C
-
-```
-#if defined(MEM_TARGET_LIM)
-#define MSS_MAC_RX_RING_SIZE (16U)
-#define MSS_MAC_TX_RING_SIZE (16U)
-#else
-#define MSS_MAC_RX_RING_SIZE (32U)
-#if defined(MSS_MAC_SPEED_TEST)
-#define MSS_MAC_TX_RING_SIZE (4001U)
-#else
-#define MSS_MAC_TX_RING_SIZE (1001U)
-#endif
-#endif
-```
-
-Sync this header across all board build configurations (`lim-release`, `lim-debug`, `ddr-release`, `envm-scratchpad-release`) so `CONFIG_DIR` never picks up a stale copy:
-
-Bash
-
-```
-find boards -name "mss_ethernet_mac_sw_cfg.h" \
-  -exec cp -f platform/drivers/mss/mss_ethernet_mac/mss_ethernet_mac_sw_cfg.h {} \;
-```
-
-#### **C. MAC Driver Buffer & Software Queues (`middleware/net_stack/net_port.c`)**
-
-Replace the jumbo-frame RX buffer stride (`MSS_MAC_MAX_RX_BUF_SIZE = 10240U`) with standard MTU-aligned `RX_SLOT_SIZE` (`1536U`, saving **136 KiB** in L2-LIM) and scale the software TX/RX ring queues under `MEM_TARGET_LIM`:
-
-C
-
-```
-#define PACKET_MAX              1518U
-#define RX_SLOT_SIZE            1536U
-#define TX_SLOT_SIZE            1536U
-#define ETH_MIN_LEN             60U
-
-#if defined(MEM_TARGET_LIM)
-#define TX_RING_SLOTS           4U
-#define RX_QUEUE_SIZE           8U
-#else
-#define TX_RING_SLOTS           8U
-#define RX_QUEUE_SIZE           64U
-#endif
-
-static uint8_t g_mac_rx_buffer[MSS_MAC_RX_RING_SIZE][RX_SLOT_SIZE] __attribute__((aligned(16)));
-static uint8_t g_mac_tx_buffer[TX_RING_SLOTS][TX_SLOT_SIZE] __attribute__((aligned(16)));
-```
-
-#### **D. lwIP Heap & Pool Sizing (`middleware/net_stack/lwipopts.h`)**
-
-Scale lwIP pools under `MEM_TARGET_LIM` while maintaining enough `MEMP_NUM_SYS_TIMEOUT` slots (`12`) for ARP, TCP, DHCP, and TFTP timers simultaneously:
-
-C
-
-```
-#if defined(MEM_TARGET_LIM)
-#define MEM_SIZE                        (24 * 1024)
-#define MEMP_NUM_PBUF                   16
-#define MEMP_NUM_UDP_PCB                6
-#define MEMP_NUM_TCP_PCB                8
-#define MEMP_NUM_TCP_SEG                16
-#define MEMP_NUM_SYS_TIMEOUT            12
-#define PBUF_POOL_SIZE                  12
-#else
-#define MEM_SIZE                        (128 * 1024)
-#define MEMP_NUM_PBUF                   32
-#define MEMP_NUM_UDP_PCB                8
-#define MEMP_NUM_TCP_PCB                16
-#define MEMP_NUM_TCP_SEG                32
-#define MEMP_NUM_SYS_TIMEOUT            16
-#define PBUF_POOL_SIZE                  32
-#endif
-```
-
-#### **E. TFTP RAM-Disk Capacity (`middleware/net_stack/tftp_server_app.c`)**
-
-Scale the static RAM-disk buffer to `16 KiB` in L2-LIM (`1 MiB` in DDR):
-
-C
-
-```
-#if defined(MEM_TARGET_LIM)
-#define TFTP_RAMDISK_BYTES  (16U * 1024U)       /* 16 KiB in L2-LIM SRAM */
-#else
-#define TFTP_RAMDISK_BYTES  (1024U * 1024U)     /* 1 MiB in DDR */
-#endif
-```
-
-### **4\. Building, Booting & Testing `lim-app`**
-
-#### **1\. Build & Audit L2-LIM Memory Usage**
-
-Bash
-
-```
-make BOARD=mpfs-disco-kit clean lim-app
-make BOARD=mpfs-disco-kit MEM_TARGET=lim-app memusage
-```
-
-Verify that `l2lim` usage stays below `256 KiB` (`0x40000` bytes).
-
-#### **2\. Boot via HSS YMODEM (`lim-app-boot`)**
-
-1. **Terminal 1 — Open Application Console (`MMUART4`):**  
-2. Bash
-
-```
-python3 -m serial.tools.miniterm /dev/ttyUSB2 115200
-```
-
-3.   
-4. **Terminal 2 — Upload & Boot `lim-app` Payload via HSS (`MMUART0`):**  
-5. Bash
-
-```
-make BOARD=mpfs-disco-kit lim-app-boot
-```
-
-6.   
-7. **Verify L2-LIM Execution on `/dev/ttyUSB2`:**  
-   * Confirm the boot banner prints **`Entry @ 0x0008040...`** (confirming execution from High-LIM rather than DDR `0x80000000`).  
-   * Confirm MAC initialization logs **`[MAC] GEM0 TBI/SGMII + VSC8221 ready (RX ring=16, ...)`**.  
-   * Press **`t`** in the UART console to verify **`[TFTP] Buffer Addr : 0x00080... (Cap: 16 KiB)`**.
-
-#### **3\. Optional: Program to SPI Flash for Cold-Boot (`lim-flash`)**
-
-Once verified over YMODEM, flash the `lim-app` HSS payload into onboard SPI Flash (`0x00020000`) so the board boots autonomously into L2-LIM on power-cycle:
-
-Bash
-
-```
-make BOARD=mpfs-disco-kit lim-flash
-```
-
-#### **4\. Functional Network Verification (Host PC)**
-
-Replace `<board-ip>` with the IPv4 address printed on `/dev/ttyUSB2` (DHCP lease or static fallback `192.168.20.50`):
-
-Bash
-
-```
-# 1. ICMP Echo (Ping)
-ping -c 4 <board-ip>
-
-# 2. HTTP Web Server & CGI Endpoint (TCP/80)
-curl -i http://<board-ip>/
-curl -i "http://<board-ip>/ctrl.cgi?cmd=led_toggle"
-
-# 3. TFTP RAM-Disk Upload & Download (UDP/69, binary octet mode, <= 16 KiB)
-tftp -m octet <board-ip> -c put Makefile
-tftp -m octet <board-ip> -c get Makefile /tmp/Makefile.lim.rx
-diff -s Makefile /tmp/Makefile.lim.rx
-```
-
-
-
-
-
-# PolarFire SoC Bare-Metal lwIP Network Application
-
-This project is a bare-metal C application demonstrating Ethernet networking (lwIP 2.x) on the **PolarFire SoC Discovery Kit (MPFS095T)**. It runs entirely without an RTOS (`NO_SYS=1`) and features a DHCP client, an ICMP Ping responder, a static HTTP Web Server (TCP/80) with CGI handling, and a TFTP RAM-Disk Server (UDP/69).
-
-## Hardware & Peripheral Routing
-
-* **Target Board**: PolarFire SoC Discovery Kit
-
-* **Ethernet MAC**: GEM0
-
-* **Ethernet PHY**: VSC8221 (over Bank 5 SGMII / TBI interface)
-
-* **MDIO Address**: `11`
-
-* **HSS Boot Console**: `MMUART0` (typically `/dev/ttyUSB0` or `/dev/ttyUSB1`)
-
-* **Application Stdio**: `MMUART4` (typically `/dev/ttyUSB2` or `/dev/ttyUSB3`)
-
-## 1. Critical Configuration Settings
-
-Getting the MAC, PHY, and lwIP stack to work cooperatively requires specific configurations across several files.
-
-### A. Board Build Flags (`boards/mpfs-disco-kit/board.mk`)
-
-Ensure the compiler builds for the Discovery Kit and utilizes a single-queue TX structure:
-
+### A. Build System (`boards/<board>/board.mk`)
+Ensure the MMC driver is compiled into the project. Depending on your `platform/` snapshot, you only need `mss_mmc.c`.
 ```makefile
-BOARD_CFLAGS += -DBOARD_MPFS_DISCO_KIT \
-                -DMPFS_DISCOVERY_KIT \
-                -DTARGET_DISCOVERY_KIT \
-                -DTARGET_G5_SOC \
-                -DMSS_MAC_SIMPLE_TX_QUEUE \
-                -DGEM0_MSS_MDIO
+BOARD_SRCS_C += platform/drivers/mss/mss_mmc/mss_mmc.c
 ```
 
-### B. Board Hardware Config (`boards/mpfs-disco-kit/board_config.h`)
+### B. Hardware Initialization (`boards/<board>/board_init.c`)
+Release the reset for the EMMC peripheral before handing off to the application.
+```c
+/* In board_periph_init() */
+(void)mss_config_clk_rst(MSS_PERIPH_EMMC, (uint8_t)MPFS_HAL_FIRST_HART, PERIPHERAL_ON);
+```
 
-The Discovery Kit uses a VSC8221 PHY connected via the TBI interface. The MAC interrupt must route to the PLIC handler.
+### C. The Storage Wrapper (`middleware/net_stack/mmc_storage.c` & `.h`)
+Create a dedicated storage module to handle the hardware initialization sequence, 512-byte sector alignment, and metadata tracking.
+
+**Key functions to implement:**
+1. `mmc_reset_block()`: Manually toggles `SYSREG->SOFT_RESET_CR`.
+2. `mmc_storage_init()`: Attempts eMMC initialization (with `switch_mssio_config`), falls back to lower speeds, and finally falls back to SD Card mode.
+3. `mmc_file_write_chunk()`: Buffers arbitrary incoming byte lengths (e.g., from network packets) and calls `MSS_MMC_single_block_write()` strictly on 512-byte boundaries.
+
+### D. TFTP Server Hook (`middleware/net_stack/tftp_server_app.c`)
+Modify the lwIP TFTP context to route network data directly to the eMMC rather than a RAM-disk.
+```c
+static const struct tftp_context g_tftp_ctx = {
+    .open  = tftp_mmc_open,   // Calls mmc_file_open_write()
+    .close = tftp_mmc_close,  // Calls mmc_file_close_write()
+    .read  = tftp_mmc_read,   // Calls mmc_file_read_chunk()
+    .write = tftp_mmc_write,  // Calls mmc_file_write_chunk()
+};
+
+void tftp_server_app_init(void) {
+    tftp_init_server(&g_tftp_ctx);
+}
+```
+
+### E. Application Main Loop (`application/hart1/u54_1.c`)
+Initialize the storage subsystem before the network stack, and add interactive UART diagnostics.
+```c
+/* In u54_1() main loop setup */
+(void)mmc_storage_init();
+net_port_init();
+tftp_server_app_init();
+```
+
+---
+
+## 3. Troubleshooting `MSS_MMC_NOT_INITIALISED` (Status = 1)
+
+If `mmc_storage_init()` returns `1`, check the following in order:
+
+1. **Check your Libero XML generation:** Ensure `boards/<board>/fpga_design_config/io/hw_mssio_mux.h` has `0x00000000UL` for `IOMUX1_CR`, `IOMUX2_CR`, and `IOMUX6_CR`. If they contain GPIO mappings, the eMMC pins are physically disconnected inside the silicon.
+2. **Check your Reset Sequence:** Ensure `mmc_reset_block()` is executing before *every* call to `MSS_MMC_init()`.
+3. **Check the Fabric Demux (Icicle Kit Specific):** Older Icicle Kit FPGA designs routed the SD/eMMC mux through the fabric. If `CONFIG_SERVICE_MMC_FABRIC_SD_EEMC_DEMUX_SELECTED_PRESENT` is defined in your hardware design, you must write `0U` (eMMC) or `1U` (SD) to the demux address (usually `0x4F000000UL`).
+
+
+
+# MMC Storage Abstraction Layer (`mmc_storage.c`)
+
+`mmc_storage.c` acts as a bare-metal storage abstraction layer that bridges byte-oriented network packets from lwIP's TFTP server to 512-byte Logical Block Address (LBA) sectors on the PolarFire SoC's eMMC/SD host controller (`mss_mmc`). 
+
+Because the target runs without an operating system or filesystem (such as FAT32 or ext4), this module implements raw sector management, unaligned-to-aligned buffer accumulation, persistent file metadata, and incremental CRC32 integrity verification.
+
+## 1. Disk Layout, Data Structures & State
+
+Rather than starting at sector `0`—which would overwrite partition tables (MBR/GPT) or boot payloads stored for Hart Software Services (HSS)—the module places all storage operations at a `10 MiB` offset (sector `20480`, assuming `512` bytes per sector):
+
+| LBA Sector | Byte Offset | Purpose |
+| :--- | :--- | :--- |
+| **`20479`** (`MMC_META_SECTOR - 1`) | `10,485,248` (`~10 MiB - 512 B`) | Dedicated scratch sector for the standalone UART write/read-back self-test, isolated from stored files. |
+| **`20480`** (`MMC_META_SECTOR`) | `10,485,760` (`10.0 MiB`) | Persistent `512`-byte file metadata header (`mmc_file_meta_t`). |
+| **`20481+`** (`MMC_DATA_START_SECTOR`) | `10,486,272+` | Contiguous raw file payload sectors (up to `MMC_MAX_FILE_BYTES = 16 MiB`). |
+
+To persist file attributes across power cycles without a filesystem, `mmc_file_meta_t` defines an exact `512`-byte packed, 4-byte-aligned structure matching one hardware sector:
+
+* **`magic` (`0x4D4D4346UL`):** ASCII `"MMCF"` signature used to verify whether sector `20480` holds valid file metadata or uninitialized flash data.
+* **`file_size` & `crc32`:** Exact byte length of the uploaded file (excluding trailing sector padding) and its IEEE 802.3 CRC32 checksum.
+* **`filename[64]` & `reserved[436]`:** Null-terminated filename string plus zeroed padding so `sizeof(mmc_file_meta_t)` equals `512` bytes, preventing out-of-bounds DMA/FIFO reads when passed to `MSS_MMC_single_block_write()`.
+
+Several static state variables coordinate asynchronous network chunks and hardware alignment requirements:
+
+* **`g_sector_buf[512]` (`__attribute__((aligned(8)))`):** Acts as a staging window for accumulating partial incoming network chunks into complete `512`-byte sectors and holding sectors read from flash. The 8-byte alignment is required because `MSS_MMC_single_block_write()` and `MSS_MMC_single_block_read()` cast the buffer pointer to `uint32_t *` for 32-bit FIFO/DMA transfers.
+* **`g_mmc_ready` & `g_last_init_status`:** Tracks whether hardware initialization succeeded and preserves the exact `mss_mmc_status_t` enum code (`MSS_MMC_NOT_INITIALISED` by default) so diagnostics remain visible even if a serial terminal connects after boot.
+* **Streaming Counters (`g_buf_used`, `g_write_sector`, `g_total_written`, `g_running_crc`):** Track the byte offset inside `g_sector_buf`, the current target LBA sector, total payload bytes received, and the running CRC32 state (`0xFFFFFFFFUL` seed) across packets.
+
+---
+
+## 2. Hardware Initialization & Multi-Stage Fallback
+
+Bringing up eMMC or SD storage in a standalone bare-metal environment requires resetting the Cadence SD/eMMC host controller and configuring Bank 4 MSSIO electrical pads before running card identification.
+
+### Controller Reset (`mmc_reset_block`)
+Before every initialization attempt, `mmc_reset_block()` ensures `SUBBLK_CLOCK_CR_MMC_MASK` is enabled in `SYSREG->SUBBLK_CLOCK_CR`, pulses `SOFT_RESET_CR_MMC_MASK` high and then low in `SYSREG->SOFT_RESET_CR`, and executes a `250,000`-iteration `nop` loop. This clears any dirty host-controller state left over from a prior failed probe or bootloader handoff and gives the internal clock dividers time to stabilize.
+
+### Dynamic Bank 4 Switching & Fallback Chain (`mmc_storage_init`)
+On the PolarFire SoC Icicle Kit, eMMC and the microSD card slot (`J22`) share MSSIO Bank 4. `mmc_storage_init()` first queries `mss_does_xml_ver_support_switch()` to confirm the Libero hardware configuration supports runtime MSSIO switching, then executes a four-tier initialization sequence:
+
+1. **eMMC @ 200 MHz (`HS200`):** Calls `switch_mssio_config(EMMC_MSSIO_CONFIGURATION)` to configure Bank 4 pads and `SYSREG->IOMUX6_CR` for `1.8V` 8-bit eMMC, then invokes `MSS_MMC_init()` in `MSS_MMC_MODE_HS200`.
+2. **eMMC @ 50 MHz (`SDR`):** If HS200 tuning fails (for instance, due to cold JTAG clock settings), resets the controller via `mmc_reset_block()` and retries eMMC at `50 MHz` in `MSS_MMC_MODE_SDR`.
+3. **microSD @ 50 MHz (`High Speed`):** If no eMMC responds, resets the block, calls `switch_mssio_config(SD_MSSIO_CONFIGURATION)` to route Bank 4 to the microSD slot (`J22`), and attempts 4-bit `MSS_MMC_CARD_TYPE_SD` initialization in `MSS_SDCARD_MODE_HIGH_SPEED`.
+4. **microSD @ 50 MHz (`Default Speed`):** Resets the controller one final time and retries 4-bit SD initialization in `MSS_SDCARD_MODE_DEFAULT_SPEED`.
+
+If all four stages fail, `g_mmc_ready` stays `false` and the function logs `status`, `xml_ok`, `sw_ok`, and `SYSREG->IOMUX6_CR` over UART for debugging.
+
+---
+
+## 3. Streaming TFTP Write & Read Pipelines
+
+TFTP transfers files in `512`-byte data blocks (terminated by a short block of `0`–`511` bytes), and lwIP may deliver a single UDP datagram split across multiple chained `pbuf` descriptors. The streaming API decouples lwIP's packet boundaries from physical flash sector writes.
+
+### Upload Path (`TFTP PUT` -> eMMC/SD)
+1. **`mmc_file_open_write(filename)`:** Triggered on a TFTP Write Request (`WRQ`). Resets `g_buf_used` to `0`, points `g_write_sector` to `20481` (`MMC_DATA_START_SECTOR`), seeds `g_running_crc` to `0xFFFFFFFFUL`, and stores `filename` in `g_active_name`.
+2. **`mmc_file_write_chunk(data, len)`:** Called for each `pbuf` payload segment. It enforces the `16 MiB` limit (`MMC_MAX_FILE_BYTES`), copies incoming bytes into `g_sector_buf` up to `512` bytes at a time, and whenever `g_buf_used == 512`, commits the full sector to flash via `MSS_MMC_single_block_write()` and increments `g_write_sector`. Simultaneously, `crc32_update()` folds the raw bytes into `g_running_crc` using the standard reflected polynomial `0xEDB88320UL`.
+3. **`mmc_file_close_write()`:** Triggered when the final TFTP packet is acknowledged. If trailing bytes remain in `g_sector_buf` (`0 < g_buf_used < 512`), it zero-pads the rest of the sector and writes that final data block. It then finalizes the CRC32 (`~g_running_crc`), populates `g_cached_meta` with `MMC_FILE_MAGIC`, `g_total_written`, and `g_active_name`, and commits the metadata header to sector `20480` (`MMC_META_SECTOR`).
+
+### Download Path (eMMC/SD -> `TFTP GET`)
+1. **`mmc_file_open_read(filename, &out_size)`:** Triggered on a TFTP Read Request (`RRQ`). Reads sector `20480` into `g_cached_meta`, verifies `magic == MMC_FILE_MAGIC` and `strcmp` against `filename`, and passes `file_size` back to the TFTP server.
+2. **`mmc_file_read_chunk(buf, max_len, offset)`:** Converts any byte-level `offset` and `max_len` request from lwIP into the corresponding LBA sector (`MMC_DATA_START_SECTOR + (cur_off / 512)`) and intra-sector byte offset (`cur_off % 512`), reads each `512`-byte sector into `g_sector_buf` via `MSS_MMC_single_block_read()`, and copies only the requested byte slice into `buf`.
+
+---
+
+## 4. Diagnostics & Standalone Self-Test
+
+* **`mmc_storage_print_info()` (UART CLI `[m]` / `[t]`):** Reads sector `20480` directly from the media and checks for `MMC_FILE_MAGIC`, printing the active media type (`eMMC` or `SD Card`), stored filename, exact byte size, and CRC32—or reporting `g_last_init_status` if the controller is offline.
+* **`mmc_storage_run_selftest()` (UART CLI `[w]`):** Fills a 512-byte buffer (`tx_blk`) with a deterministic 32-bit pattern (`0xA55A0000UL | i`), writes it to scratch sector `20479`, reads it back into `rx_blk`, and verifies bit-for-bit equality using `memcmp()` without disturbing any stored TFTP file.
+
+
+# PolarFire SoC Bare-Metal Storage & TFTP Architecture Guide
+
+This document captures the architecture, critical hardware learnings, and step-by-step file modifications required to bring up the Cadence SD/eMMC host controller on the Microchip PolarFire SoC bare-metal environment, and how to bridge it to an lwIP TFTP server for direct PC-to-eMMC file transfers.
+
+---
+
+# Part 1: MMC Storage Abstraction Layer (`mmc_storage.c`)
+
+`mmc_storage.c` acts as a bare-metal storage abstraction layer that bridges byte-oriented network packets from lwIP's TFTP server to 512-byte Logical Block Address (LBA) sectors on the PolarFire SoC's eMMC/SD host controller (`mss_mmc`). 
+
+Because the target runs without an operating system or filesystem (such as FAT32 or ext4), this module implements raw sector management, unaligned-to-aligned buffer accumulation, persistent file metadata, and incremental CRC32 integrity verification.
+
+## 1. Disk Layout, Data Structures & State
+
+Rather than starting at sector `0`—which would overwrite partition tables (MBR/GPT) or boot payloads stored for Hart Software Services (HSS)—the module places all storage operations at a `10 MiB` offset (sector `20480`, assuming `512` bytes per sector):
+
+| LBA Sector | Byte Offset | Purpose |
+| :--- | :--- | :--- |
+| **`20479`** (`MMC_META_SECTOR - 1`) | `10,485,248` (`~10 MiB - 512 B`) | Dedicated scratch sector for the standalone UART write/read-back self-test, isolated from stored files. |
+| **`20480`** (`MMC_META_SECTOR`) | `10,485,760` (`10.0 MiB`) | Persistent `512`-byte file metadata header (`mmc_file_meta_t`). |
+| **`20481+`** (`MMC_DATA_START_SECTOR`) | `10,486,272+` | Contiguous raw file payload sectors (up to `MMC_MAX_FILE_BYTES = 16 MiB`). |
+
+To persist file attributes across power cycles without a filesystem, `mmc_file_meta_t` defines an exact `512`-byte packed, 4-byte-aligned structure matching one hardware sector:
+
+* **`magic` (`0x4D4D4346UL`):** ASCII `"MMCF"` signature used to verify whether sector `20480` holds valid file metadata or uninitialized flash data.
+* **`file_size` & `crc32`:** Exact byte length of the uploaded file (excluding trailing sector padding) and its IEEE 802.3 CRC32 checksum.
+* **`filename[64]` & `reserved[436]`:** Null-terminated filename string plus zeroed padding so `sizeof(mmc_file_meta_t)` equals `512` bytes, preventing out-of-bounds DMA/FIFO reads when passed to `MSS_MMC_single_block_write()`.
+
+Several static state variables coordinate asynchronous network chunks and hardware alignment requirements:
+
+* **`g_sector_buf[512]` (`__attribute__((aligned(8)))`):** Acts as a staging window for accumulating partial incoming network chunks into complete `512`-byte sectors and holding sectors read from flash. The 8-byte alignment is required because `MSS_MMC_single_block_write()` and `MSS_MMC_single_block_read()` cast the buffer pointer to `uint32_t *` for 32-bit FIFO/DMA transfers.
+* **`g_mmc_ready` & `g_last_init_status`:** Tracks whether hardware initialization succeeded and preserves the exact `mss_mmc_status_t` enum code (`MSS_MMC_NOT_INITIALISED` by default) so diagnostics remain visible even if a serial terminal connects after boot.
+* **Streaming Counters (`g_buf_used`, `g_write_sector`, `g_total_written`, `g_running_crc`):** Track the byte offset inside `g_sector_buf`, the current target LBA sector, total payload bytes received, and the running CRC32 state (`0xFFFFFFFFUL` seed) across packets.
+
+## 2. Hardware Initialization & Multi-Stage Fallback
+
+Bringing up eMMC or SD storage in a standalone bare-metal environment requires resetting the Cadence SD/eMMC host controller and configuring Bank 4 MSSIO electrical pads before running card identification.
+
+### Controller Reset (`mmc_reset_block`)
+Before every initialization attempt, `mmc_reset_block()` ensures `SUBBLK_CLOCK_CR_MMC_MASK` is enabled in `SYSREG->SUBBLK_CLOCK_CR`, pulses `SOFT_RESET_CR_MMC_MASK` high and then low in `SYSREG->SOFT_RESET_CR`, and executes a `250,000`-iteration `nop` loop. This clears any dirty host-controller state left over from a prior failed probe or bootloader handoff and gives the internal clock dividers time to stabilize.
+
+### Dynamic Bank 4 Switching & Fallback Chain (`mmc_storage_init`)
+On the PolarFire SoC Icicle Kit, eMMC and the microSD card slot (`J22`) share MSSIO Bank 4. `mmc_storage_init()` first queries `mss_does_xml_ver_support_switch()` to confirm the Libero hardware configuration supports runtime MSSIO switching, then executes a four-tier initialization sequence:
+
+1. **eMMC @ 200 MHz (`HS200`):** Calls `switch_mssio_config(EMMC_MSSIO_CONFIGURATION)` to configure Bank 4 pads and `SYSREG->IOMUX6_CR` for `1.8V` 8-bit eMMC, then invokes `MSS_MMC_init()` in `MSS_MMC_MODE_HS200`.
+2. **eMMC @ 50 MHz (`SDR`):** If HS200 tuning fails (for instance, due to cold JTAG clock settings), resets the controller via `mmc_reset_block()` and retries eMMC at `50 MHz` in `MSS_MMC_MODE_SDR`.
+3. **microSD @ 50 MHz (`High Speed`):** If no eMMC responds, resets the block, calls `switch_mssio_config(SD_MSSIO_CONFIGURATION)` to route Bank 4 to the microSD slot (`J22`), and attempts 4-bit `MSS_MMC_CARD_TYPE_SD` initialization in `MSS_SDCARD_MODE_HIGH_SPEED`.
+4. **microSD @ 50 MHz (`Default Speed`):** Resets the controller one final time and retries 4-bit SD initialization in `MSS_SDCARD_MODE_DEFAULT_SPEED`.
+
+If all four stages fail, `g_mmc_ready` stays `false` and the function logs `status`, `xml_ok`, `sw_ok`, and `SYSREG->IOMUX6_CR` over UART for debugging.
+
+## 3. Streaming TFTP Write & Read Pipelines
+
+TFTP transfers files in `512`-byte data blocks (terminated by a short block of `0`–`511` bytes), and lwIP may deliver a single UDP datagram split across multiple chained `pbuf` descriptors. The streaming API decouples lwIP's packet boundaries from physical flash sector writes.
+
+### Upload Path (`TFTP PUT` -> eMMC/SD)
+1. **`mmc_file_open_write(filename)`:** Triggered on a TFTP Write Request (`WRQ`). Resets `g_buf_used` to `0`, points `g_write_sector` to `20481` (`MMC_DATA_START_SECTOR`), seeds `g_running_crc` to `0xFFFFFFFFUL`, and stores `filename` in `g_active_name`.
+2. **`mmc_file_write_chunk(data, len)`:** Called for each `pbuf` payload segment. It enforces the `16 MiB` limit (`MMC_MAX_FILE_BYTES`), copies incoming bytes into `g_sector_buf` up to `512` bytes at a time, and whenever `g_buf_used == 512`, commits the full sector to flash via `MSS_MMC_single_block_write()` and increments `g_write_sector`. Simultaneously, `crc32_update()` folds the raw bytes into `g_running_crc` using the standard reflected polynomial `0xEDB88320UL`.
+3. **`mmc_file_close_write()`:** Triggered when the final TFTP packet is acknowledged. If trailing bytes remain in `g_sector_buf` (`0 < g_buf_used < 512`), it zero-pads the rest of the sector and writes that final data block. It then finalizes the CRC32 (`~g_running_crc`), populates `g_cached_meta` with `MMC_FILE_MAGIC`, `g_total_written`, and `g_active_name`, and commits the metadata header to sector `20480` (`MMC_META_SECTOR`).
+
+### Download Path (eMMC/SD -> `TFTP GET`)
+1. **`mmc_file_open_read(filename, &out_size)`:** Triggered on a TFTP Read Request (`RRQ`). Reads sector `20480` into `g_cached_meta`, verifies `magic == MMC_FILE_MAGIC` and `strcmp` against `filename`, and passes `file_size` back to the TFTP server.
+2. **`mmc_file_read_chunk(buf, max_len, offset)`:** Converts any byte-level `offset` and `max_len` request from lwIP into the corresponding LBA sector (`MMC_DATA_START_SECTOR + (cur_off / 512)`) and intra-sector byte offset (`cur_off % 512`), reads each `512`-byte sector into `g_sector_buf` via `MSS_MMC_single_block_read()`, and copies only the requested byte slice into `buf`.
+
+---
+
+# Part 2: lwIP TFTP Server Integration (`tftp_server_app.c`)
+
+`tftp_server_app.c` acts as the "glue" logic between the lwIP network stack (specifically the built-in `lwip/apps/tftp_server.h` module) and our custom eMMC storage layer. It implements the callbacks required by lwIP to handle TFTP network events.
+
+## 1. Connection State Tracking
+
+Because we are implementing a bare-metal TFTP server that supports one active file transfer at a time, we use a single static struct to track the session:
+```c
+typedef struct {
+    uint8_t  is_write;
+    uint32_t file_size;
+    uint32_t offset;
+} tftp_mmc_handle_t;
+static tftp_mmc_handle_t g_tftp_handle;
+```
+* **`is_write`**: Identifies if the current transfer is a `PUT` (client uploading to the board) or a `GET` (client downloading from the board).
+* **`file_size` & `offset`**: Used during a `GET` request to keep track of how many bytes have been successfully transmitted back to the client over the network.
+
+## 2. The lwIP Callbacks (`g_tftp_ctx`)
+
+lwIP manages the UDP network sockets, timeouts, and TFTP protocol state machines (like waiting for ACKs and handling block numbers). When it needs to access the actual file data, it fires the callbacks defined in `g_tftp_ctx`.
+
+### `tftp_mmc_open()`
+Triggered when the board receives a TFTP **WRQ** (Write Request) or **RRQ** (Read Request) packet.
+* It clears the `g_tftp_handle` state.
+* If it's a write, it calls `mmc_file_open_write()`. If the eMMC is uninitialized, this returns `false`, causing `tftp_mmc_open` to return `NULL`. lwIP sees this `NULL` and automatically sends a TFTP Error packet back to the client, aborting the connection gracefully.
+* If it's a read, it calls `mmc_file_open_read()`, fetching the target file size from the metadata sector.
+
+### `tftp_mmc_write()`
+Triggered during an active `PUT` when a valid TFTP data packet arrives.
+* **The `pbuf` Chain:** In lwIP, network packets are not always stored in a single continuous block of memory. They can be split across a linked list of buffer structures called `pbuf`s. 
+* The `for (struct pbuf *q = p; q != NULL; q = q->next)` loop iterates through this chain, extracting the raw payload data from each segment and streaming it into `mmc_file_write_chunk()`.
+* Returning `< 0` tells lwIP that a storage error occurred, which will abort the TFTP session.
+
+### `tftp_mmc_read()`
+Triggered during an active `GET` when lwIP needs the next block of data to send to the client.
+* It passes the requested size and current `h->offset` down to `mmc_file_read_chunk()`, which handles fetching the correct 512-byte hardware sectors from the eMMC and pulling the exact requested byte slice.
+* Once the data is copied to lwIP's network buffer, `h->offset` is incremented.
+
+### `tftp_mmc_close()`
+Triggered when the TFTP session finishes, either successfully (the final block was ACK'd) or unsuccessfully (a timeout occurred).
+* If the transfer was a write operation, it calls `mmc_file_close_write()`. This is a critical step because it flushes any remaining partial data in the `512`-byte staging buffer to flash, computes the final CRC32, and commits the `mmc_file_meta_t` header to sector `20480`.
+
+## 3. Server Initialization
+
+`tftp_server_app_init()` simply calls `tftp_init_server(&g_tftp_ctx)`. This instructs the lwIP stack to bind a UDP socket to Port 69 and begin listening for incoming TFTP packets, dispatching them to the hardware storage functions we defined.
+
+
+
+# PolarFire SoC Bare-Metal Storage & TFTP Architecture Guide
+
+This document captures the architecture, critical hardware learnings, and step-by-step file modifications required to bring up the Cadence SD/eMMC host controller on the Microchip PolarFire SoC bare-metal environment, and how to bridge it to an lwIP TFTP server for direct PC-to-eMMC file transfers.
+
+# Part 1: MMC Storage Abstraction Layer (`mmc_storage.c`)
+
+`mmc_storage.c` acts as a bare-metal storage abstraction layer that bridges byte-oriented network packets from lwIP's TFTP server to 512-byte Logical Block Address (LBA) sectors on the PolarFire SoC's eMMC/SD host controller (`mss_mmc`).
+
+Because the target runs without an operating system or filesystem (such as FAT32 or ext4), this module implements raw sector management, unaligned-to-aligned buffer accumulation, persistent file metadata, and incremental CRC32 integrity verification.
+
+## 1. Disk Layout, Data Structures & State
+
+Rather than starting at sector `0`—which would overwrite partition tables (MBR/GPT) or boot payloads stored for Hart Software Services (HSS)—the module places all storage operations at a `10 MiB` offset (sector `20480`, assuming `512` bytes per sector):
+
+| LBA Sector | Byte Offset | Purpose | 
+| ----- | ----- | ----- | 
+| **`20479`** (`MMC_META_SECTOR - 1`) | `10,485,248` (`~10 MiB - 512 B`) | Dedicated scratch sector for the standalone UART write/read-back self-test, isolated from stored files. | 
+| **`20480`** (`MMC_META_SECTOR`) | `10,485,760` (`10.0 MiB`) | Persistent `512`-byte file metadata header (`mmc_file_meta_t`). | 
+| **`20481+`** (`MMC_DATA_START_SECTOR`) | `10,486,272+` | Contiguous raw file payload sectors (up to `MMC_MAX_FILE_BYTES = 16 MiB`). | 
+
+To persist file attributes across power cycles without a filesystem, `mmc_file_meta_t` defines an exact `512`-byte packed, 4-byte-aligned structure matching one hardware sector:
+
+* **`magic` (`0x4D4D4346UL`):** ASCII `"MMCF"` signature used to verify whether sector `20480` holds valid file metadata or uninitialized flash data.
+
+* **`file_size` & `crc32`:** Exact byte length of the uploaded file (excluding trailing sector padding) and its IEEE 802.3 CRC32 checksum.
+
+* **`filename[64]` & `reserved[436]`:** Null-terminated filename string plus zeroed padding so `sizeof(mmc_file_meta_t)` equals `512` bytes, preventing out-of-bounds DMA/FIFO reads when passed to `MSS_MMC_single_block_write()`.
+
+Several static state variables coordinate asynchronous network chunks and hardware alignment requirements:
+
+* **`g_sector_buf[512]` (`__attribute__((aligned(8)))`):** Acts as a staging window for accumulating partial incoming network chunks into complete `512`-byte sectors and holding sectors read from flash. The 8-byte alignment is required because `MSS_MMC_single_block_write()` and `MSS_MMC_single_block_read()` cast the buffer pointer to `uint32_t *` for 32-bit FIFO/DMA transfers.
+
+* **`g_mmc_ready` & `g_last_init_status`:** Tracks whether hardware initialization succeeded and preserves the exact `mss_mmc_status_t` enum code (`MSS_MMC_NOT_INITIALISED` by default) so diagnostics remain visible even if a serial terminal connects after boot.
+
+* **Streaming Counters (`g_buf_used`, `g_write_sector`, `g_total_written`, `g_running_crc`):** Track the byte offset inside `g_sector_buf`, the current target LBA sector, total payload bytes received, and the running CRC32 state (`0xFFFFFFFFUL` seed) across packets.
+
+## 2. Hardware Initialization & Multi-Stage Fallback
+
+Bringing up eMMC or SD storage in a standalone bare-metal environment requires resetting the Cadence SD/eMMC host controller and configuring Bank 4 MSSIO electrical pads before running card identification.
+
+### Controller Reset (`mmc_reset_block`)
+
+Before every initialization attempt, `mmc_reset_block()` ensures `SUBBLK_CLOCK_CR_MMC_MASK` is enabled in `SYSREG->SUBBLK_CLOCK_CR`, pulses `SOFT_RESET_CR_MMC_MASK` high and then low in `SYSREG->SOFT_RESET_CR`, and executes a `250,000`-iteration `nop` loop. This clears any dirty host-controller state left over from a prior failed probe or bootloader handoff and gives the internal clock dividers time to stabilize.
+
+### Dynamic Bank 4 Switching & Fallback Chain (`mmc_storage_init`)
+
+On the PolarFire SoC Icicle Kit, eMMC and the microSD card slot (`J22`) share MSSIO Bank 4. `mmc_storage_init()` first queries `mss_does_xml_ver_support_switch()` to confirm the Libero hardware configuration supports runtime MSSIO switching, then executes a four-tier initialization sequence:
+
+1. **eMMC @ 200 MHz (`HS200`):** Calls `switch_mssio_config(EMMC_MSSIO_CONFIGURATION)` to configure Bank 4 pads and `SYSREG->IOMUX6_CR` for `1.8V` 8-bit eMMC, then invokes `MSS_MMC_init()` in `MSS_MMC_MODE_HS200`.
+
+2. **eMMC @ 50 MHz (`SDR`):** If HS200 tuning fails (for instance, due to cold JTAG clock settings), resets the controller via `mmc_reset_block()` and retries eMMC at `50 MHz` in `MSS_MMC_MODE_SDR`.
+
+3. **microSD @ 50 MHz (`High Speed`):** If no eMMC responds, resets the block, calls `switch_mssio_config(SD_MSSIO_CONFIGURATION)` to route Bank 4 to the microSD slot (`J22`), and attempts 4-bit `MSS_MMC_CARD_TYPE_SD` initialization in `MSS_SDCARD_MODE_HIGH_SPEED`.
+
+4. **microSD @ 50 MHz (`Default Speed`):** Resets the controller one final time and retries 4-bit SD initialization in `MSS_SDCARD_MODE_DEFAULT_SPEED`.
+
+If all four stages fail, `g_mmc_ready` stays `false` and the function logs `status`, `xml_ok`, `sw_ok`, and `SYSREG->IOMUX6_CR` over UART for debugging.
+
+## 3. Streaming TFTP Write & Read Pipelines
+
+TFTP transfers files in `512`-byte data blocks (terminated by a short block of `0`–`511` bytes), and lwIP may deliver a single UDP datagram split across multiple chained `pbuf` descriptors. The streaming API decouples lwIP's packet boundaries from physical flash sector writes.
+
+### Upload Path (`TFTP PUT` -> eMMC/SD)
+
+1. **`mmc_file_open_write(filename)`:** Triggered on a TFTP Write Request (`WRQ`). Resets `g_buf_used` to `0`, points `g_write_sector` to `20481` (`MMC_DATA_START_SECTOR`), seeds `g_running_crc` to `0xFFFFFFFFUL`, and stores `filename` in `g_active_name`.
+
+2. **`mmc_file_write_chunk(data, len)`:** Called for each `pbuf` payload segment. It enforces the `16 MiB` limit (`MMC_MAX_FILE_BYTES`), copies incoming bytes into `g_sector_buf` up to `512` bytes at a time, and whenever `g_buf_used == 512`, commits the full sector to flash via `MSS_MMC_single_block_write()` and increments `g_write_sector`. Simultaneously, `crc32_update()` folds the raw bytes into `g_running_crc` using the standard reflected polynomial `0xEDB88320UL`.
+
+3. **`mmc_file_close_write()`:** Triggered when the final TFTP packet is acknowledged. If trailing bytes remain in `g_sector_buf` (`0 < g_buf_used < 512`), it zero-pads the rest of the sector and writes that final data block. It then finalizes the CRC32 (`~g_running_crc`), populates `g_cached_meta` with `MMC_FILE_MAGIC`, `g_total_written`, and `g_active_name`, and commits the metadata header to sector `20480` (`MMC_META_SECTOR`).
+
+### Download Path (eMMC/SD -> `TFTP GET`)
+
+1. **`mmc_file_open_read(filename, &out_size)`:** Triggered on a TFTP Read Request (`RRQ`). Reads sector `20480` into `g_cached_meta`, verifies `magic == MMC_FILE_MAGIC` and `strcmp` against `filename`, and passes `file_size` back to the TFTP server.
+
+2. **`mmc_file_read_chunk(buf, max_len, offset)`:** Converts any byte-level `offset` and `max_len` request from lwIP into the corresponding LBA sector (`MMC_DATA_START_SECTOR + (cur_off / 512)`) and intra-sector byte offset (`cur_off % 512`), reads each `512`-byte sector into `g_sector_buf` via `MSS_MMC_single_block_read()`, and copies only the requested byte slice into `buf`.
+
+# Part 2: lwIP TFTP Server Integration (`tftp_server_app.c`)
+
+`tftp_server_app.c` acts as the "glue" logic between the lwIP network stack (specifically the built-in `lwip/apps/tftp_server.h` module) and our custom eMMC storage layer. It implements the callbacks required by lwIP to handle TFTP network events.
+
+## 1. Connection State Tracking
+
+Because we are implementing a bare-metal TFTP server that supports one active file transfer at a time, we use a single static struct to track the session:
 
 ```c
-#define APP_MAC_IRQn            MAC0_INT_U54_INT
-#define APP_MAC_POLL_ISR()      ((void)PLIC_mac0_int_IRQHandler())
-#define APP_PHY_ADDR            11U   /* PHY_VSC8221_MDIO_ADDR */
-#define APP_PCS_PHY_ADDR        SGMII_MDIO_ADDR
-#define APP_PHY_INTERFACE       TBI   /* Bank 5 SGMII TBI Mode */
-#define APP_PHY_TYPE            MSS_MAC_DEV_PHY_VSC8221
+typedef struct {
+    uint8_t  is_write;
+    uint32_t file_size;
+    uint32_t offset;
+} tftp_mmc_handle_t;
+static tftp_mmc_handle_t g_tftp_handle;
 ```
 
-### C. Clock & Reset Initialization (`boards/mpfs-disco-kit/board_init.c`)
+* **`is_write`**: Identifies if the current transfer is a `PUT` (client uploading to the board) or a `GET` (client downloading from the board).
+* **`file_size` & `offset`**: Used during a `GET` request to keep track of how many bytes have been successfully transmitted back to the client over the network.
 
-Before calling `MSS_MAC_init()`, the system registers must enable the MAC and UART clocks, and the PLIC must be initialized to accept interrupts.
+## 2. The lwIP Callbacks (`g_tftp_ctx`)
 
-```c
-SYSREG->SOFT_RESET_CR   = 0U;
-SYSREG->SUBBLK_CLOCK_CR = 0xFFFFFFFFUL;
-(void)mss_config_clk_rst(MSS_PERIPH_MMUART4, MPFS_HAL_FIRST_HART, PERIPHERAL_ON);
-(void)mss_config_clk_rst(MSS_PERIPH_MAC0,    MPFS_HAL_FIRST_HART, PERIPHERAL_ON);
-PLIC_init();
-__enable_irq();
-```
+lwIP manages the UDP network sockets, timeouts, and TFTP protocol state machines (like waiting for ACKs and handling block numbers). When it needs to access the actual file data, it fires the callbacks defined in `g_tftp_ctx`.
 
-### D. MAC Software Config (`mss_ethernet_mac_sw_cfg.h`)
+* **`tftp_mmc_open()`**: Triggered on WRQ/RRQ. Clears state and calls the underlying `mmc_file_open_*` logic. Returning `NULL` gracefully aborts the connection.
+* **`tftp_mmc_write()`**: Iterates through the chained `pbuf` structures (lwIP's network buffer linked lists) and passes the raw payloads into `mmc_file_write_chunk()`.
+* **`tftp_mmc_read()`**: Pulls the exact byte slice requested by lwIP out of the eMMC via `mmc_file_read_chunk()`.
+* **`tftp_mmc_close()`**: Flushes partial staging buffers and commits the `mmc_file_meta_t` header to the metadata sector.
 
-**CRITICAL REQUIREMENT:** The build system uses different `platform_config` subdirectories depending on your memory target (`lim-debug`, `lim-release`, `ddr-release`, `envm-release`, etc.). You **must** ensure the correctly modified `mss_ethernet_mac_sw_cfg.h` is present in *every* configuration folder for your specific board. For example:
-* `boards/mpfs-disco-kit/platform_config/lim-debug/drivers/mss/mss_ethernet_mac/`
-* `boards/mpfs-disco-kit/platform_config/ddr-release/drivers/mss/mss_ethernet_mac/`
+# Part 3: Ethernet MAC & lwIP Network Interface (`net_port.c`)
 
-If an older copy is picked up by the compiler from one of these configuration folders, the `RX_RING_SIZE` may default to 4. This will silently drop burst packets from modern web browsers (which open multiple parallel connections) causing the web server to fail or hang.
+`net_port.c` is the core Hardware Abstraction Layer (HAL) that bridges the PolarFire SoC's Gigabit Ethernet MAC blocks (`mss_mac`) to lwIP's generic `netif` (Network Interface) structure. 
 
-To prevent dropped packets during parallel TCP requests, the RX ring must be sufficiently large in this file:
+## 1. Data Structures & Configuration
 
-```c
-#define MSS_MAC_RX_RING_SIZE (32U)  /* Do NOT use 4U */
-#define MSS_MAC_TX_RING_SIZE (16U)
-```
+The networking subsystem is highly configurable to support multiple active Ethernet ports (e.g., GEM0 and GEM1 on the Icicle Kit). 
+* **`net_port_hw_t`**: Holds static hardware configuration injected from `board_config.h` (e.g., PHY addresses, MAC addresses, interrupts, and static IP fallbacks). 
+* **`net_port_ctx_t`**: Tracks the dynamic runtime state for each port. Crucially, it manages the interrupt-driven RX raw queue, the DMA-aligned TX/RX ring buffers (`mac_rx_buffer` and `mac_tx_buffer`), and lwIP's `struct netif`.
 
-### E. lwIP Options (`middleware/net_stack/lwipopts.h`)
+## 2. Safe Interrupt Bridging (The RX Path)
 
-TFTP and DHCP require enough UDP PCBs and System Timeout slots to function simultaneously.
+In a bare-metal environment, allocating memory (like lwIP's `pbuf_alloc`) inside a fast-firing hardware interrupt service routine (ISR) can lead to heap corruption or stack overflows. `net_port.c` safely bridges this gap:
 
-```c
-#define NO_SYS                          1
-#define SYS_LIGHTWEIGHT_PROT            0
-#define MEMP_NUM_UDP_PCB                8
-#define MEMP_NUM_SYS_TIMEOUT            16  /* Prevents TFTP allocation failures */
-```
+1. **The ISR (`mac_rx_callback`)**: When a packet arrives, the MAC triggers this interrupt. The ISR does *not* touch lwIP. Instead, it copies the raw packet into a fast, circular lock-free queue (`rx_raw_queue`), advances the `rx_q_head` pointer, and immediately hands the DMA buffer back to the MAC controller (`MSS_MAC_receive_pkt`).
+2. **The Main Loop (`net_port_poll`)**: Running safely in the main application loop (`while(1)`), this function drains the `rx_raw_queue`. For each pending packet, it safely allocates an lwIP `pbuf`, copies the data from the queue into the `pbuf`, and passes it up to lwIP via `ctx->netif.input()`.
 
-## 2. Building & Booting
+## 3. Transmission (The TX Path)
 
-1. **Build the DDR Target**:
+When lwIP needs to send a packet (TCP, UDP, TFTP, Ping), it calls `low_level_output()`. 
+* Because lwIP `pbuf` payloads might not be perfectly aligned for the PolarFire SoC's DMA engine, the function copies the payload into a strictly 16-byte aligned slot in `mac_tx_buffer`.
+* It enforces the Ethernet standard minimum frame size (padding payloads smaller than 60 bytes with zeros).
+* It temporarily disables MAC interrupts (`PLIC_DisableIRQ`), kicks the hardware transmission (`MSS_MAC_send_pkt`), and re-enables interrupts.
 
-   ```bash
-   make BOARD=mpfs-disco-kit clean ddr
-   ```
+## 4. DHCP & Link State Machine
 
-2. **Open the Application Console (MMUART4)**:
-   In a separate terminal, open the application's UART port.
+`net_port_poll()` acts as the heartbeat of the network stack. Every cycle, it checks the physical PHY link status (Up/Down) and negotiates speed (e.g., 1000 Mbps Full-Duplex). 
+When a link comes UP:
+1. It informs lwIP (`netif_set_link_up`).
+2. It starts a DHCP discovery broadcast to acquire an IP address automatically.
+3. If no DHCP lease is acquired within `DHCP_FALLBACK_MS` (8000 milliseconds), the port gracefully stops the DHCP client and falls back to the hardcoded static IP defined in `board_config.h`. 
 
-   ```bash
-   python3 -m serial.tools.miniterm /dev/ttyUSB2 115200
-   ```
+# Part 4: HTTP Web Server & CGI Handling (`web_server.c`)
 
-3. **Boot via HSS**:
-   Trigger the HSS payload transfer over MMUART0.
+`web_server.c` initializes lwIP's lightweight, built-in HTTP daemon (`httpd`). While standard files (like `index.html`) can be served using lwIP's ROM filesystem (`fsdata.c`), dynamic interaction is handled through CGI (Common Gateway Interface).
 
-   ```bash
-   make BOARD=mpfs-disco-kit ddr-boot
-   ```
+## CGI Routing (`cgi_ctrl_handler`)
 
-*(Wait for the board to boot. In your `miniterm` console, you will see the hardware init sequence, link auto-negotiation, and either a DHCP IP assignment or a fallback to the static `192.168.20.50`.)*
+When the web server is initialized (`http_set_cgi_handlers`), we register a route mapping `/ctrl.cgi` to the `cgi_ctrl_handler` function.
 
-## 3. Testing the Network Services
-
-Once the application console prints `[DHCP] Lease acquired!` or `applied static IPv4`, note the IP address and run the following tests from your host PC.
-
-### A. ICMP Ping Test
-
-Verify basic Layer 3 connectivity:
-
-```bash
-ping -c 4 <board-ip>
-```
-
-*Note: Press `s` in the UART console to watch the `RX` and `TX` packet counters increment.*
-
-### B. HTTP Web Server (TCP Port 80)
-
-Test the web server handshake and payload delivery using `curl`:
-
-```bash
-curl -v http://<board-ip>/
-```
-
-Test the simulated CGI endpoint (this will trigger a log message on the board's UART console):
-
-```bash
-curl -i "http://<board-ip>/ctrl.cgi?cmd=led_toggle"
-```
-
-*Note on Web Browsers: You can also open `http://<board-ip>/` in a standard desktop web browser (e.g., Firefox, Chrome). If it fails to load, ensure your browser is not forcing a redirect to HTTPS (port 443) and that your browser is not routing the local IP address through a proxy.*
-
-### C. TFTP RAM-Disk Server (UDP Port 69)
-
-The TFTP server strictly requires **Binary/Octet** mode. The default Linux `tftp` client uses `netascii`, which will result in a timeout if not overridden.
-
-Test uploading a file (`put`):
-
-```bash
-tftp -m octet <board-ip> -c put Makefile
-```
-
-Test downloading the file back (`get`):
-
-```bash
-tftp -m octet <board-ip> -c get Makefile /tmp/Makefile.rx
-diff -s Makefile /tmp/Makefile.rx
-```
-
-*Note: Press `t` in the UART console to view the currently stored file in the RAM-disk buffer and its size in bytes.*
+If a user submits a form or makes a GET request to the board (e.g., `http://192.168.20.51/ctrl.cgi?led=1&speed=100`), lwIP parses the URL and triggers this callback. 
+* The handler iterates through the `iNumParams` provided.
+* It extracts the keys (`pcParam`) and values (`pcValue`) and logs them to the UART console.
+* Finally, it returns `"/index.html"`, instructing the HTTP server to redirect the client back to the main webpage. 
