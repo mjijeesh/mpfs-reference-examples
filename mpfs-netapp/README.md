@@ -268,9 +268,9 @@ Continuing.
 Use ddr-debug when debugging with the full 128 MiB DDR4 memory map, large MAC rings (32 RX / 1001 TX descriptors), and the 1 MiB TFTP RAM-disk.  
 **Critical Prerequisite:** DDR4 memory (0x80000000) is uninitialized immediately after power-on. Pre-flashed **Hart Software Services (HSS)** must run on E51 first to initialize PLLs and train the DDR4 controller. Accordingly, debug-ddr uses a **soft halt** (monitor halt, never reset halt) and only redirects **threads 2–5 (U54\_1–U54\_4)** to \_start, leaving **thread 1 (E51)** safely parked inside HSS.
 
-> 1. Reset the Board & Wait \~2 Seconds for HSS to finish DDR4 training.  
-> 2. Start OpenOCD (Terminal 1\) and App UART (Terminal 2).  
-> 3. **Terminal 3 — Build, Load into DDR & Run GDB:** make BOARD=mpfs-disco-kit debug-ddr
+ 1. Reset the Board & Wait \~2 Seconds for HSS to finish DDR4 training.  
+ 2. Start OpenOCD (Terminal 1\) and App UART (Terminal 2).  
+ 3. **Terminal 3 — Build, Load into DDR & Run GDB:** make BOARD=mpfs-disco-kit debug-ddr
 
 ## **8\. Running from DDR or L2-LIM via HSS (Release Builds)**
 
