@@ -196,7 +196,7 @@ On the Icicle Kit, a dual-port VSC8662 PHY serves both GEM1 (MDIO address 9\) an
 
 ```
 
-> * **MSS\_MAC\_RX\_RING\_SIZE / MSS\_MAC\_TX\_RING\_SIZE:** Must be at least **16U**. The PolarFire SoC GEM0 DMA controller fetches descriptors in bursts; setting ring sizes below 16U stalls packet reception.
+ * **MSS\_MAC\_RX\_RING\_SIZE / MSS\_MAC\_TX\_RING\_SIZE:** Must be at least **16U**. The PolarFire SoC GEM0 DMA controller fetches descriptors in bursts; setting ring sizes below 16U stalls packet reception.
 
 ### **E. lwIP Stack Configuration (middleware/net\_stack/lwipopts.h) & Memory Scaling**
 
@@ -213,9 +213,9 @@ On the Icicle Kit, a dual-port VSC8662 PHY serves both GEM1 (MDIO address 9\) an
 
 Use lim-debug when you want standalone JTAG debugging without depending on an external bootloader or pre-trained DDR. debug-lim issues a **hard reset** (monitor reset halt), loads the ELF directly into L2-LIM (0x08000000), and points **all 5 harts** (E51 \+ U54\_1..4) to \_start so E51 configures system clocks and SGMII before waking U54\_1.
 
-> 1. **Terminal 1 — Start the OpenOCD JTAG Server:** make BOARD=mpfs-disco-kit openocd  
-> 2. **Terminal 2 — Open the Application Serial Console (MMUART4):** minicom \-b 115200 \-D /dev/ttyUSB2  
-> 3. **Terminal 3 — Build, Load into L2-LIM & Run GDB:** make BOARD=mpfs-disco-kit debug-lim
+ 1. **Terminal 1 — Start the OpenOCD JTAG Server:** make BOARD=mpfs-disco-kit openocd  
+ 2. **Terminal 2 — Open the Application Serial Console (MMUART4):** minicom \-b 115200 \-D /dev/ttyUSB2  
+ 3. **Terminal 3 — Build, Load into L2-LIM & Run GDB:** make BOARD=mpfs-disco-kit debug-lim
 
 If you prefer to debug straight out of L2-LIM SRAM using OpenOCD and GDB:  
 **Terminal 1: OpenOCD**
