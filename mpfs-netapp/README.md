@@ -314,8 +314,12 @@ python3 tools/mpfs-terminal.py /dev/ttyUSB1 --kernel build/mpfs-disco-kit/ddr-re
 
 ### **Step 3 — Enter HSS TinyCLI & Trigger serialboot**
 
-Reset the board and press any key inside mpfs-terminal.py to enter the HSS \>\> prompt. Execute serialboot. HSS emits the SFL magic trigger, mpfs-terminal.py automatically replies with the handshake ACK and transfers the payload with CRC16 verification, and HSS parses the payload chunks and boots U54\_1.  
-**Command:** python3 tools/mpfs-terminal.py /dev/ttyUSB1 \--kernel build/mpfs-disco-kit/ddr-release/mpfs-net-app\_payload.bin  
+Reset the board and press any key inside mpfs-terminal.py to enter the `HSS >>` prompt.
+
+Execute serialboot. HSS emits the SFL magic trigger, mpfs-terminal.py automatically replies with the handshake ACK and transfers the payload with CRC16 verification, and HSS parses the payload chunks and boots `U54_1`.
+
+**Command:** python3 tools/mpfs-terminal.py /dev/ttyUSB1 \--kernel build/mpfs-disco-kit/ddr-release/mpfs-net-app\_payload.bin
+
 **Purpose:** Opens the HSS bootloader UART port, waits for the user to type serialboot in the HSS console, and then streams the binary to DDR memory using the SFL protocol.  
 **Expected Terminal Output:**
 
@@ -438,17 +442,26 @@ Files Makefile and /tmp/Makefile.rx are identical
 
 Because hardware configuration is isolated under boards/\<board\>/, supporting a new PolarFire SoC board requires **zero changes** to application/, middleware/, or the root Makefile. Follow these steps:
 
-> 1. **Create the Board Directory Structure:** mkdir \-p boards/my-custom-board/{fpga\_design/design\_description,fpga\_design\_config,platform\_config}  
-> 2. **Add the Libero SoC MSS Hardware Export:** Export the XML to boards/my-custom-board/fpga\_design/design\_description/. The build system will generate the headers.  
-> 3. **Update platform\_config/ Linker Scripts & MAC Driver Config:** Verify L2-LIM Size in Linker Scripts based on LIBERO\_SETTING\_WAY\_ENABLE. Enable your PHY Driver in mss\_ethernet\_mac\_sw\_cfg.h.  
-> 4. **Create boards/my-custom-board/board.mk:** Specify your target silicon, package, stdio UART number, PHY driver C file, and MAC MDIO routing flag.  
-> 5. **Map Peripherals & Ethernet Ports in boards/my-custom-board/board\_config.h.**  
-> 6. **Implement boards/my-custom-board/board\_init.c:** Un-gate clocks and resets for the exact MMUART and GEM peripherals configured in board\_config.h.  
-> 7. **Build & Test Your Custom Board:** make BOARD=my-custom-board lim-debug
+1. **Create the Board Directory Structure:** mkdir \-p boards/my-custom-board/{fpga\_design/design\_description,fpga\_design\_config,platform\_config}  
+
+2. **Add the Libero SoC MSS Hardware Export:** Export the XML to boards/my-custom-board/fpga\_design/design\_description/. The build system will generate the headers.  
+
+3. **Update platform\_config/ Linker Scripts & MAC Driver Config:** Verify L2-LIM Size in Linker Scripts based on LIBERO\_SETTING\_WAY\_ENABLE. Enable your PHY Driver in mss\_ethernet\_mac\_sw\_cfg.h.  
+
+4. **Create boards/my-custom-board/board.mk:** Specify your target silicon, package, stdio UART number, PHY driver C file, and MAC MDIO routing flag.  
+
+5. **Map Peripherals & Ethernet Ports in boards/my-custom-board/board\_config.h.**  
+
+6. **Implement boards/my-custom-board/board\_init.c:** Un-gate clocks and resets for the exact MMUART and GEM peripherals configured in board\_config.h.  
+7. **Build & Test Your Custom Board:** make BOARD=my-custom-board lim-debug
 
 ## **11\. Critical Implementation Notes & Troubleshooting**
 
-> * **Minimum GEM0/GEM1 DMA Ring Size (16U):** Never reduce MSS\_MAC\_RX\_RING\_SIZE or MSS\_MAC\_TX\_RING\_SIZE below 16U, as the PolarFire SoC GEM DMA descriptor cache requires at least 16 descriptors to operate reliably. Keep mss\_ethernet\_mac\_sw\_cfg.h synchronized across all platform\_config/\* subdirectories.  
-> * **Single Inclusion of fsdata\_custom.c:** lwIP's middleware/lwip/src/apps/http/fs.c directly \#includes fsdata\_custom.c when HTTPD\_USE\_CUSTOM\_FSDATA \= 1\. middleware/middleware.mk intentionally excludes fsdata\_custom.c from NET\_STACK\_SRCS\_C to avoid duplicate symbol linker errors.  
-> * **HSS L2-LIM Boundary (0x08040000):** Never load lim-debug (0x08000000) through HSS serialboot, and never link an HSS-booted L2-LIM binary below 0x08040000—zeroing .bss at 0x08000000 overwrites HSS's live E51 runtime data and hangs the SoC.  
-> * **DDR Debug Hard-Reset Trap:** Never use debug-lim (which runs monitor reset halt) to debug a DDR target, and never run debug-ddr before HSS has finished DDR4 training (\~2 seconds after power-up), or GDB memory writes to 0x80000000 will fail with bus faults.
+
+* **Minimum GEM0/GEM1 DMA Ring Size (16U):** Never reduce MSS\_MAC\_RX\_RING\_SIZE or MSS\_MAC\_TX\_RING\_SIZE below 16U, as the PolarFire SoC GEM DMA descriptor cache requires at least 16 descriptors to operate reliably. Keep mss\_ethernet\_mac\_sw\_cfg.h synchronized across all platform\_config/\* subdirectories.  
+
+* **Single Inclusion of fsdata\_custom.c:** lwIP's middleware/lwip/src/apps/http/fs.c directly \#includes fsdata\_custom.c when HTTPD\_USE\_CUSTOM\_FSDATA \= 1\. middleware/middleware.mk intentionally excludes fsdata\_custom.c from NET\_STACK\_SRCS\_C to avoid duplicate symbol linker errors.  
+
+* **HSS L2-LIM Boundary (0x08040000):** Never load lim-debug (0x08000000) through HSS serialboot, and never link an HSS-booted L2-LIM binary below 0x08040000—zeroing .bss at 0x08000000 overwrites HSS's live E51 runtime data and hangs the SoC.  
+
+* **DDR Debug Hard-Reset Trap:** Never use debug-lim (which runs monitor reset halt) to debug a DDR target, and never run debug-ddr before HSS has finished DDR4 training (\~2 seconds after power-up), or GDB memory writes to 0x80000000 will fail with bus faults.
