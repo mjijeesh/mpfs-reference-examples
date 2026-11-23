@@ -62,6 +62,11 @@ The `Makefile` infers the memory target automatically and generates artifacts in
 
 > *Note:* L2-LIM builds (`-DMEM_TARGET_LIM`) dynamically shrink DMA descriptors, rx queues, lwIP heaps, and the TFTP RAM-disk to fit safely inside limited on-chip SRAM.
 
+
+
+
+
+
 ## 4. Step-by-Step Build & Deploy Tutorial
 
 ### Workflow A: Build & Audit Memory Usage

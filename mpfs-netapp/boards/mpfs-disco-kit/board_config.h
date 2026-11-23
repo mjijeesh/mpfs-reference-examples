@@ -39,6 +39,35 @@ extern uint8_t PLIC_mac0_int_IRQHandler(void);
 #define APP_STATIC_NETMASK      { 255, 255, 255, 0 }
 #define APP_STATIC_GW           { 192, 168, 20, 1 }
 
+
+
+/* Discovery Kit: GEM0 + VSC8221 SGMII PHY (TBI, MDIO addr 11) */
+#define NET_PORT_LIST                                                               \
+                                                                                    \
+    {                                                                               \
+        /* Port J1: GEM0 Data + GEM1 MDIO, VSC8662 Ch 0 @ MDIO 8 */                 \
+        .if_name               = { 'e', '0' },                                      \
+        .label                 = "GEM0 TBI/SGMII + VSC8221",                        \
+        .mac_dev               = &g_mac0,                                           \
+        .mdio_mac              = &g_mac0,                                           \
+        .irqn                  = MAC0_INT_U54_INT,                                  \
+        .phy_addr              = PHY_VSC8221_MDIO_ADDR,                             \
+        .pcs_phy_addr          = SGMII_MDIO_ADDR,                                   \
+        .phy_type              = MSS_MAC_DEV_PHY_VSC8221,                           \
+        .phy_flags             = PHY_VSC8221_EEPROM_INIT,                                                \
+        .interface_type        = TBI,                                               \
+        .phy_init              = MSS_MAC_VSC8221_phy_init,                          \
+        .phy_set_link_speed    = MSS_MAC_VSC8221_phy_set_link_speed,                \
+        .phy_autonegotiate     = MSS_MAC_VSC8221_phy_autonegotiate,                 \
+        .phy_mac_autonegotiate = MSS_MAC_VSC8221_mac_autonegotiate,                 \
+        .phy_get_link_status   = MSS_MAC_VSC8221_phy_get_link_status,               \
+        .mac_addr              = { 0x00, 0x04, 0xA3, 0x11, 0x22, 0x33 },            \
+        .static_ip             = { 192, 168, 30, 51 },                              \
+        .static_mask           = { 255, 255, 255, 0 },                              \
+        .static_gw             = { 192, 168, 30, 1 },                               \
+    }
+
+
 /* Board-specific peripheral clock, reset & interrupt setup */
 void board_periph_init(void);
 
