@@ -7,42 +7,42 @@ Out of the box, the application provides DHCPv4 discovery with automatic static 
 
 If you are new to the PolarFire SoC platform, these terms are essential to understand the architecture:
 
-> * **Hart:** "Hardware Thread." The PolarFire SoC has 5 RISC-V harts (one E51 monitor core, and four U54 application cores).  
-> * **HSS (Hart Software Services):** The standard Microchip bootloader. It typically lives in non-volatile memory, runs on the E51 core, initializes DDR memory, and boots your application payload.  
-> * **L2-LIM (Loosely Integrated Memory):** A portion of the L2 Cache reconfigured as fast, deterministic on-chip SRAM. Great for debugging without needing DDR memory.  
-> * **eNVM:** Embedded Non-Volatile Memory. Where bootloaders like HSS usually reside on the chip.  
-> * **GEM (Gigabit Ethernet MAC):** The hardware block inside the PolarFire SoC that handles Ethernet communication.  
-> * **PHY:** The external physical layer transceiver chip on the board (e.g., VSC8221 or VSC8662) that connects the GEM to the physical RJ-45 Ethernet jack.  
-> * **PLIC:** Platform-Level Interrupt Controller. Routes hardware interrupts (like an incoming network packet) to the RISC-V cores.
+ * **Hart:** "Hardware Thread." The PolarFire SoC has 5 RISC-V harts (one E51 monitor core, and four U54 application cores).  
+ * **HSS (Hart Software Services):** The standard Microchip bootloader. It typically lives in non-volatile memory, runs on the E51 core, initializes DDR memory, and boots your application payload.  
+ * **L2-LIM (Loosely Integrated Memory):** A portion of the L2 Cache reconfigured as fast, deterministic on-chip SRAM. Great for debugging without needing DDR memory.  
+ * **eNVM:** Embedded Non-Volatile Memory. Where bootloaders like HSS usually reside on the chip.  
+ * **GEM (Gigabit Ethernet MAC):** The hardware block inside the PolarFire SoC that handles Ethernet communication.  
+ * **PHY:** The external physical layer transceiver chip on the board (e.g., VSC8221 or VSC8662) that connects the GEM to the physical RJ-45 Ethernet jack.  
+ * **PLIC:** Platform-Level Interrupt Controller. Routes hardware interrupts (like an incoming network packet) to the RISC-V cores.
 
 ## **2\. Prerequisites & Hardware Setup**
 
 ### **Software Prerequisites**
 
-> * **SoftConsole:** Microchip's Eclipse-based IDE. It includes the RISC-V GCC toolchain (riscv-none-elf-gcc), GDB, and OpenOCD.  
-> * **Libero SoC:** Microchip's FPGA design suite (used for generating hardware configuration headers).  
-> * **Serial Terminal:** A program like PuTTY, TeraTerm, or minicom / pyserial (Python) to view the board's UART output.
+ * **SoftConsole:** Microchip's Eclipse-based IDE. It includes the RISC-V GCC toolchain (riscv-none-elf-gcc), GDB, and OpenOCD.  
+ * **Libero SoC:** Microchip's FPGA design suite (used for generating hardware configuration headers).  
+ * **Serial Terminal:** A program like PuTTY, TeraTerm, or minicom / pyserial (Python) to view the board's UART output.
 
 ### **Hardware Connections (Example: Discovery Kit)**
 
-> * **USB Debug Cable:** Connect a Micro-USB cable to J5 on the Discovery Kit. This single cable provides JTAG debugging and enumerates four separate COM ports (UARTs).  
+ * **USB Debug Cable:** Connect a Micro-USB cable to J5 on the Discovery Kit. This single cable provides JTAG debugging and enumerates four separate COM ports (UARTs).  
   * **UART 0:** Used by the HSS Bootloader (115200 baud).  
   * **UART 4:** Used by this NetApp application for logs and the CLI (115200 baud).  
-> * **Ethernet Cable:** Connect an RJ45 cable from J11 on the Discovery Kit to your router, switch, or directly to your host PC.
+ * **Ethernet Cable:** Connect an RJ45 cable from J11 on the Discovery Kit to your router, switch, or directly to your host PC.
 
 ## **3\. System Architecture & Multi-Hart Execution Model**
 
 ### **Core Architectural Layers**
 
-> * **Board-Agnostic Hardware Abstraction:** Application code (application/) and network stack modules (middleware/) contain zero hardcoded board peripherals. All UART instances, MAC controllers, MDIO buses, PHY drivers, clock enables, and memory maps are injected at compile time from boards/\<board\>/.  
-> * **Multi-Hart Asymmetric Execution:**  
+ * **Board-Agnostic Hardware Abstraction:** Application code (application/) and network stack modules (middleware/) contain zero hardcoded board peripherals. All UART instances, MAC controllers, MDIO buses, PHY drivers, clock enables, and memory maps are injected at compile time from boards/\<board\>/.  
+ * **Multi-Hart Asymmetric Execution:**  
   * **E51 (Monitor Hart 0):** In standalone JTAG debug builds (lim-debug), E51 boots from \_start and executes mss\_nwc\_init() to configure System PLLs, clock trees, DDR4, and SGMII before releasing the U54 application harts. In bootloader-assisted flows (lim-release, ddr-debug, ddr-release), Hart Software Services (HSS) remains resident on E51 and dispatches the U54 payload directly.  
   * **U54\_1 (Application Hart 1):** Initializes the board stdio MMUART (115200 8N1), configures the Gigabit Ethernet MAC(s) and PHY(s), starts DHCP discovery, and runs the cooperative superloop (net\_port\_poll() \+ poll\_uart\_cli()).  
   * **U54\_2 – U54\_4 (Secondary Harts 2–4):** Satisfy the mpfs\_hal startup synchronization barrier and enter low-power wfi (Wait For Interrupt) idle loops.  
-> * **Lock-Free Interrupt-to-Polling Ethernet Driver (middleware/net\_stack/net\_port.c):**  
+ * **Lock-Free Interrupt-to-Polling Ethernet Driver (middleware/net\_stack/net\_port.c):**  
   * Drives one or more MSS Gigabit Ethernet MAC instances (GEM0 / GEM1) over TBI/SGMII with dynamic link-speed and duplex auto-negotiation (10/100/1000 Mbps).  
   * Inside mac\_rx\_callback() (PLIC interrupt context), incoming frames are copied into a lock-free ring buffer (rx\_raw\_queue) and the DMA descriptor is immediately recycled to hardware. net\_port\_poll() drains rx\_raw\_queue in main-loop context into lwIP PBUF\_POOL buffers, preventing re-entrancy hazards without needing an RTOS.  
-> * **IPv4 & Embedded Services:**  
+ * **IPv4 & Embedded Services:**  
   * **DHCP \+ Static IPv4 Fallback:** Starts DHCP discovery upon PHY link-up. If no lease is acquired within 8000 ms (DHCP\_FALLBACK\_MS), the stack stops DHCP and applies the board's static IPv4 configuration.  
   * **HTTP Server (TCP/80):** Serves static web pages compiled into fsdata\_custom.c and routes /ctrl.cgi requests to cgi\_ctrl\_handler() in web\_server.c.  
   * **TFTP Server (UDP/69):** Implements binary (octet) file upload (put) and download (get) backed by an aligned static RAM-disk buffer (s\_ramdisk in tftp\_server\_app.c).
@@ -90,9 +90,9 @@ mpfs-netapp/`
 
 On the Discovery Kit Libero hardware design (LIBERO\_SETTING\_WAY\_ENABLE \= 0x0000000BUL), 12 of the 16 L2 SRAM ways (1.5 MiB) are allocated to L2 Cache, leaving 4 ways (**512 KiB**, 0x0800\_0000 – 0x0807\_FFFF) mapped as on-chip **L2 Loosely Integrated Memory (L2-LIM)**.
 
-> * **Standalone JTAG (lim-debug):** Links at 0x0800\_0000 (LENGTH \= 512k), using the entire L2-LIM region while E51 executes the application startup code.  
-> * **HSS High-LIM Payload (lim-release):** Because HSS executes from eNVM (0x2022\_0000) and remains resident on E51 after booting U54, HSS reserves the lower 256 KiB (0x0800\_0000 – 0x0803\_FFFF) for E51 stacks, .bss, and IPI queues. mpfs-lim-app.ld therefore links into the upper **256 KiB High-LIM** (ORIGIN \= 0x08040000, LENGTH \= 256k).  
-> * **DDR Targets (ddr-debug / ddr-release):** Link into cached 32-bit DDR4 (ORIGIN \= 0x80000000, LENGTH \= 128M), relying on HSS to train the DDR4 controller prior to loading.
+ * **Standalone JTAG (lim-debug):** Links at 0x0800\_0000 (LENGTH \= 512k), using the entire L2-LIM region while E51 executes the application startup code.  
+ * **HSS High-LIM Payload (lim-release):** Because HSS executes from eNVM (0x2022\_0000) and remains resident on E51 after booting U54, HSS reserves the lower 256 KiB (0x0800\_0000 – 0x0803\_FFFF) for E51 stacks, .bss, and IPI queues. mpfs-lim-app.ld therefore links into the upper **256 KiB High-LIM** (ORIGIN \= 0x08040000, LENGTH \= 256k).  
+ * **DDR Targets (ddr-debug / ddr-release):** Link into cached 32-bit DDR4 (ORIGIN \= 0x80000000, LENGTH \= 128M), relying on HSS to train the DDR4 controller prior to loading.
 
 ### **Makefile Targets Summary**
 
