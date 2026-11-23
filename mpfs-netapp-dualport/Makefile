@@ -2,7 +2,7 @@
 # PolarFire SoC Bare-Metal Network Application Makefile
 # ==============================================================================
 
-TARGET ?= mpfs-net-app
+TARGET ?= mpfs-net-app-dual
 BOARD  ?= $(if $(board),$(board),mpfs-disco-kit)
 
 # Infer MEM_TARGET automatically from convenience goals when not set explicitly
