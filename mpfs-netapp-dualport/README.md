@@ -133,14 +133,14 @@ You need a Linux environment with the RISC-V GNU Toolchain (`riscv-none-elf-gcc`
    [HSS] Generating boot payload: build/mpfs-disco-kit/ddr-release/mpfs-net-app_payload.bin
    Hart Software Service formatted boot image generator v0.99.53
    Copyright (c) 2021-2026 Microchip FPGA Embedded Systems Solutions.Set-name is >>PolarFire-SoC-HSS::mpfs-net-app<<
-   Output filename is >>build/mpfs-disco-kit/ddr-release/mpfs-net-app_payload.bin<<   
+   Output filename is >>build/mpfs-disco-kit/ddr-release/mpfs-net-app-payload.bin<<   
    text       data        bss        dec        hex    filename
    80272       3728    1410208    1494208     16ccc0    
    build/mpfs-disco-kit/ddr-release/mpfs-net-app.elf
    ```
 
 
-   *Expected Output: The compiler will run and eventually print a table showing memory usage, creating a file named `mpfs-net-app-dualport_payload.bin`.*
+   *Expected Output: The compiler will run and eventually print a table showing memory usage, creating a file named `mpfs-net-app-dualport-payload.bin`.*
 
 ---
 
@@ -153,7 +153,7 @@ This sends the file over the USB cable.
 1. Ensure the Icicle Kit's Micro-USB is connected to your PC.
 2. In a Linux terminal, run the provided Python script to trigger the upload to the HSS serial port (usually `/dev/ttyUSB0`):
    ```
-   python3 tools/mpfs-terminal.py /dev/ttyUSB0 --kernel build/mpfs-icicle-kit/ddr-release/mpfs-net-app-dualport_payload.bin 
+   python3 tools/mpfs-terminal.py /dev/ttyUSB0 --kernel build/mpfs-icicle-kit/ddr-release/mpfs-net-app-dualport-payload.bin 
    ```
    *The script will say "Uploading...", write the file into the board's RAM, and command the board to boot.*
 
@@ -199,7 +199,7 @@ Execute serialboot. HSS emits the SFL magic trigger, mpfs-terminal.py automatica
 
 
 
-### Option B: Loading via HSS Netboot (Over Network)
+### Option B: Loading via HSS  Netboot (Over Network)
 This is much faster but requires a TFTP server on your Linux PC.
 1. Copy `mpfs-net-app-dualport_payload.bin` to your PC's TFTP folder and rename it to `boot.bin`.
 2. Open a standard serial terminal to the HSS console:
@@ -219,6 +219,57 @@ This is much faster but requires a TFTP server on your Linux PC.
    ```text
    >> netboot 192.168.20.94 boot.bin
    ```
+
+---
+
+### Option C: Loading via HSS  YMODEM 
+This is much faster but requires a Serial Terminal with YMDOEM support like TeraTermPro on windows or minicom on linux.
+1. Copy `mpfs-net-app-dualport_payload.bin` to your PC's TFTP folder and rename it to `boot.bin`.
+2. Open a standard serial terminal ( Teraterm Pro ) to the HSS console:
+   
+3. Press a key on your keyboard to stop the default boot process and enter the `TinyCLI` prompt.
+
+4. Tell the board to download the file from your PC's using YMODEM
+   ```text
+   >> ymodem spi 
+   ```
+ You should get a message liek below
+  ```
+  >> ymodem spi
+
+
+[YMODEM] Ready to receive payload into 0x80000000 and flash at SPI offset 0x400...
+CCCCCCC
+
+  ```
+
+  Now on the Teraterm `File->Transfer->YMODEM->Send`
+
+  Select the paylod file from build/mpfs-icicle-kit/ddr-release/mpfs-netapp-dualport-payload.bin
+
+  Transfer will take  less than a  minute  to downlaod the file to the DDR memory.
+
+  Once the transfer is finished, we should see the below message 
+
+
+  ```
+>> ymodem spi
+
+[YMODEM] Ready to receive payload into 0x80000000 and flash at SPI offset 0x400...
+CCCCCCCCC
+
+Received 85936 bytes from mpfs-net-app-payload.bin (CRC32 is 0x0638C289)
+[SPI-FLASH] Detected Microchip SST25WF (MFR: 0x62, DEV: 0x0613)
+[SPI-FLASH] Backing up 1024 prefix bytes at 0x0...
+[SPI-FLASH] Erasing 64 KiB sectors covering 0x400 (85936 bytes)...
+[SPI-FLASH] Programming 85936 bytes to 0x400...
+[SPI-FLASH] SUCCESS: Payload verified in SPI Flash @ 0x400! 
+Reset board to boot.
+
+```
+
+
+Now you can reset the board to boot from SPI flash or use the  `flashboot` command to directly boot without reset.
 
 ---
 
