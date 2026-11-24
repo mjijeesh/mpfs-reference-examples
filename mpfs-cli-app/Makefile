@@ -237,7 +237,7 @@ all: print_build_info generate_headers \
      $(BUILD_DIR)/$(TARGET).bin \
      $(BUILD_DIR)/$(TARGET).hex \
      $(BUILD_DIR)/$(TARGET).fbi \
-     $(BUILD_DIR)/$(TARGET)_payload.bin \
+     $(BUILD_DIR)/$(TARGET)-payload.bin \
      show_size
 
 print_build_info:
@@ -314,10 +314,9 @@ $(BUILD_DIR)/payload.yaml: $(BUILD_DIR)/$(TARGET).elf
 	echo "    skip-opensbi: true" >> $@; \
 	echo "    payload-name: \"$(TARGET)\"" >> $@
 
-$(BUILD_DIR)/$(TARGET)_payload.bin: $(BUILD_DIR)/$(TARGET).elf $(BUILD_DIR)/payload.yaml $(HSS_PAYLOAD_GEN)
+$(BUILD_DIR)/$(TARGET)-payload.bin: $(BUILD_DIR)/$(TARGET).elf $(BUILD_DIR)/payload.yaml $(HSS_PAYLOAD_GEN)
 	@echo " [HSS] Generating formatted boot payload: $@"
 	@$(HSS_PAYLOAD_GEN) -c $(BUILD_DIR)/payload.yaml $@
-	@cp $@ $(BUILD_DIR)/payload.bin
 
 show_size: $(BUILD_DIR)/$(TARGET).elf
 	@echo ""

@@ -144,7 +144,7 @@ ELF_FILE     := $(BUILD_DIR)/$(TARGET).elf
 BIN_FILE     := $(BUILD_DIR)/$(TARGET).bin
 HEX_FILE     := $(BUILD_DIR)/$(TARGET).hex
 FBI_FILE     := $(BUILD_DIR)/$(TARGET).fbi
-PAYLOAD_FILE := $(BUILD_DIR)/$(TARGET)_payload.bin
+PAYLOAD_FILE := $(BUILD_DIR)/$(TARGET)-payload.bin
 
 BASE_ARTIFACTS := $(ELF_FILE) $(BIN_FILE) $(HEX_FILE) $(FBI_FILE)
 ALL_ARTIFACTS  := $(BASE_ARTIFACTS) $(if $(filter 1,$(NEEDS_HSS_PAYLOAD)),$(PAYLOAD_FILE))
@@ -222,7 +222,6 @@ $(BUILD_DIR)/payload.yaml: $(ELF_FILE)
 $(PAYLOAD_FILE): $(ELF_FILE) $(BUILD_DIR)/payload.yaml $(HSS_PAYLOAD_GEN)
 	@echo " [HSS] Generating boot payload: $@"
 	@$(HSS_PAYLOAD_GEN) -c $(BUILD_DIR)/payload.yaml $@
-	@cp -f $@ $(BUILD_DIR)/payload.bin
 
 # 7. Build, Flash & JTAG Debug Workflows
 lim-debug lim-release ddr-debug ddr-release envm-lim:
